@@ -1,0 +1,10 @@
+[package]
+name = "vk-triangle-rust"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "vk-triangle-rust"
+
+[dependencies]
+glfw = {workspace = true}
