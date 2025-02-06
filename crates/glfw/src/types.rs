@@ -15,7 +15,7 @@ use std::ffi::{c_char, c_double, c_float, c_int, c_uchar, c_uint, c_ushort, c_vo
 *
 *  @ingroup context
  */
-pub type GLFWglproc = extern "C" fn();
+pub type Glproc = extern "C" fn();
 
 /** @brief Vulkan API function pointer type.
 *
@@ -29,7 +29,7 @@ pub type GLFWglproc = extern "C" fn();
 *
 *  @ingroup vulkan
  */
-pub type GLFWvkproc = extern "C" fn();
+pub type Vkproc = extern "C" fn();
 
 /** @brief Opaque monitor object.
 *
@@ -42,7 +42,7 @@ pub type GLFWvkproc = extern "C" fn();
 *  @ingroup monitor
  */
 #[repr(C)]
-pub struct GLFWmonitor;
+pub struct Monitor;
 
 /** @brief Opaque window object.
 *
@@ -55,7 +55,7 @@ pub struct GLFWmonitor;
 *  @ingroup window
  */
 #[repr(C)]
-pub struct GLFWwindow;
+pub struct Window;
 
 /** @brief Opaque cursor object.
 *
@@ -68,7 +68,7 @@ pub struct GLFWwindow;
 *  @ingroup input
  */
 #[repr(C)]
-pub struct GLFWcursor;
+pub struct Cursor;
 
 /** @brief The function pointer type for memory allocation callbacks.
 *
@@ -121,7 +121,7 @@ pub struct GLFWcursor;
 *
 *  @ingroup init
  */
-pub type GLFWallocatefun = extern "C" fn(size: isize, user: *mut c_void) -> *mut c_void;
+pub type AllocateFun = extern "C" fn(size: isize, user: *mut c_void) -> *mut c_void;
 
 /** @brief The function pointer type for memory reallocation callbacks.
 *
@@ -177,7 +177,7 @@ pub type GLFWallocatefun = extern "C" fn(size: isize, user: *mut c_void) -> *mut
 *
 *  @ingroup init
  */
-pub type GLFWreallocatefun =
+pub type ReallocateFun =
     extern "C" fn(block: *mut c_void, size: isize, user: *mut c_void) -> *mut c_void;
 
 /** @brief The function pointer type for memory deallocation callbacks.
@@ -220,7 +220,7 @@ pub type GLFWreallocatefun =
 *
 *  @ingroup init
  */
-pub type GLFWdeallocatefun = extern "C" fn(block: *mut c_void, user: *mut c_void) -> *mut c_void;
+pub type DeallocateFun = extern "C" fn(block: *mut c_void, user: *mut c_void) -> *mut c_void;
 
 /** @brief The function pointer type for error callbacks.
 *
@@ -244,7 +244,7 @@ pub type GLFWdeallocatefun = extern "C" fn(block: *mut c_void, user: *mut c_void
 *
 *  @ingroup init
  */
-pub type GLFWerrorfun = extern "C" fn(error_code: c_int, description: *const c_char);
+pub type ErrorFun = extern "C" fn(error_code: c_int, description: *const c_char);
 
 /** @brief The function pointer type for window position callbacks.
 *
@@ -267,7 +267,7 @@ pub type GLFWerrorfun = extern "C" fn(error_code: c_int, description: *const c_c
 *
 *  @ingroup window
  */
-pub type GLFWwindowposfun = extern "C" fn(window: *mut GLFWwindow, xpos: c_int, ypos: c_int);
+pub type WindowPosFun = extern "C" fn(window: *mut Window, xpos: c_int, ypos: c_int);
 
 /** @brief The function pointer type for window size callbacks.
 *
@@ -289,7 +289,7 @@ pub type GLFWwindowposfun = extern "C" fn(window: *mut GLFWwindow, xpos: c_int, 
 *
 *  @ingroup window
  */
-pub type GLFWwindowsizefun = extern "C" fn(window: *mut GLFWwindow, width: c_int, int: c_int);
+pub type WindowSizeFun = extern "C" fn(window: *mut Window, width: c_int, int: c_int);
 
 /** @brief The function pointer type for window close callbacks.
 *
@@ -309,7 +309,7 @@ pub type GLFWwindowsizefun = extern "C" fn(window: *mut GLFWwindow, width: c_int
 *
 *  @ingroup window
  */
-pub type GLFWwindowclosefun = extern "C" fn(window: *mut GLFWwindow);
+pub type WindowCloseFun = extern "C" fn(window: *mut Window);
 
 /** @brief The function pointer type for window content refresh callbacks.
 *
@@ -329,7 +329,7 @@ pub type GLFWwindowclosefun = extern "C" fn(window: *mut GLFWwindow);
 *
 *  @ingroup window
  */
-pub type GLFWwindowrefreshfun = extern "C" fn(window: *mut GLFWwindow);
+pub type WindowRefreshFun = extern "C" fn(window: *mut Window);
 
 /** @brief The function pointer type for window focus callbacks.
 *
@@ -350,7 +350,7 @@ pub type GLFWwindowrefreshfun = extern "C" fn(window: *mut GLFWwindow);
 *
 *  @ingroup window
  */
-pub type GLFWwindowfocusfun = extern "C" fn(window: *mut GLFWwindow, focused: c_int);
+pub type WindowFocusFun = extern "C" fn(window: *mut Window, focused: c_int);
 
 /** @brief The function pointer type for window iconify callbacks.
 *
@@ -371,7 +371,7 @@ pub type GLFWwindowfocusfun = extern "C" fn(window: *mut GLFWwindow, focused: c_
 *
 *  @ingroup window
  */
-pub type GLFWwindowiconifyfun = extern "C" fn(window: *mut GLFWwindow, iconified: c_int);
+pub type WindowIconifyFun = extern "C" fn(window: *mut Window, iconified: c_int);
 
 /** @brief The function pointer type for window maximize callbacks.
 *
@@ -392,7 +392,7 @@ pub type GLFWwindowiconifyfun = extern "C" fn(window: *mut GLFWwindow, iconified
 *
 *  @ingroup window
  */
-pub type GLFWwindowmaximizefun = extern "C" fn(window: *mut GLFWwindow, maximized: c_int);
+pub type WindowMaximizeFun = extern "C" fn(window: *mut Window, maximized: c_int);
 
 /** @brief The function pointer type for framebuffer size callbacks.
 *
@@ -413,7 +413,7 @@ pub type GLFWwindowmaximizefun = extern "C" fn(window: *mut GLFWwindow, maximize
 *
 *  @ingroup window
  */
-pub type GLFWframebuffersizefun = extern "C" fn(window: *mut GLFWwindow, width: c_int, height: c_int);
+pub type FrameBufferSizeFun = extern "C" fn(window: *mut Window, width: c_int, height: c_int);
 
 /** @brief The function pointer type for window content scale callbacks.
 *
@@ -434,8 +434,8 @@ pub type GLFWframebuffersizefun = extern "C" fn(window: *mut GLFWwindow, width: 
 *
 *  @ingroup window
  */
-pub type GLFWwindowcontentscalefun =
-    extern "C" fn(window: *mut GLFWwindow, xscale: c_float, yscale: c_float);
+pub type WindowContentScaleFun =
+    extern "C" fn(window: *mut Window, xscale: c_float, yscale: c_float);
 
 /** @brief The function pointer type for mouse button callbacks.
 *
@@ -461,8 +461,7 @@ pub type GLFWwindowcontentscalefun =
 *
 *  @ingroup input
  */
-pub type GLFWmousebuttonfun =
-    extern "C" fn(window: *mut GLFWwindow, button: c_int, action: c_int, mods: c_int);
+pub type MouseButtonFun = extern "C" fn(window: *mut Window, button: c_int, action: c_int, mods: c_int);
 
 /** @brief The function pointer type for cursor position callbacks.
 *
@@ -485,7 +484,7 @@ pub type GLFWmousebuttonfun =
 *
 *  @ingroup input
  */
-pub type GLFWcursorposfun = extern "C" fn(window: *mut GLFWwindow, xpos: c_double, ypos: c_double);
+pub type CursorPosFun = extern "C" fn(window: *mut Window, xpos: c_double, ypos: c_double);
 
 /** @brief The function pointer type for cursor enter/leave callbacks.
 *
@@ -506,7 +505,7 @@ pub type GLFWcursorposfun = extern "C" fn(window: *mut GLFWwindow, xpos: c_doubl
 *
 *  @ingroup input
  */
-pub type GLFWcursorenterfun = extern "C" fn(window: *mut GLFWwindow, entered: c_int);
+pub type CursorEnterFun = extern "C" fn(window: *mut Window, entered: c_int);
 
 /** @brief The function pointer type for scroll callbacks.
 *
@@ -527,7 +526,7 @@ pub type GLFWcursorenterfun = extern "C" fn(window: *mut GLFWwindow, entered: c_
 *
 *  @ingroup input
  */
-pub type GLFWscrollfun = extern "C" fn(window: *mut GLFWwindow, xoffset: c_double, yoffset: c_double);
+pub type ScrollFun = extern "C" fn(window: *mut Window, xoffset: c_double, yoffset: c_double);
 
 /** @brief The function pointer type for keyboard key callbacks.
 *
@@ -553,8 +552,8 @@ pub type GLFWscrollfun = extern "C" fn(window: *mut GLFWwindow, xoffset: c_doubl
 *
 *  @ingroup input
  */
-pub type GLFWkeyfun =
-    extern "C" fn(window: *mut GLFWwindow, key: c_int, scancode: c_int, action: c_int, mods: c_int);
+pub type KeyFun =
+    extern "C" fn(window: *mut Window, key: c_int, scancode: c_int, action: c_int, mods: c_int);
 
 /** @brief The function pointer type for Unicode character callbacks.
 *
@@ -575,7 +574,7 @@ pub type GLFWkeyfun =
 *
 *  @ingroup input
  */
-pub type GLFWcharfun = extern "C" fn(window: *mut GLFWwindow, codepoint: c_uint);
+pub type CharFun = extern "C" fn(window: *mut Window, codepoint: c_uint);
 
 /** @brief The function pointer type for Unicode character with modifiers
 *  callbacks.
@@ -602,7 +601,7 @@ pub type GLFWcharfun = extern "C" fn(window: *mut GLFWwindow, codepoint: c_uint)
 *
 *  @ingroup input
  */
-pub type GLFWcharmodsfun = extern "C" fn(window: *mut GLFWwindow, codepoint: c_uint, mods: c_int);
+pub type CharModsFun = extern "C" fn(window: *mut Window, codepoint: c_uint, mods: c_int);
 
 /** @brief The function pointer type for path drop callbacks.
 *
@@ -626,8 +625,8 @@ pub type GLFWcharmodsfun = extern "C" fn(window: *mut GLFWwindow, codepoint: c_u
 *
 *  @ingroup input
  */
-pub type GLFWdropfun =
-    extern "C" fn(window: *mut GLFWwindow, path_count: c_int, paths: *const *const c_char);
+pub type DropFun =
+    extern "C" fn(window: *mut Window, path_count: c_int, paths: *const *const c_char);
 // typedef void ( * GLFWdropfun)(GLFWwindow* window, int path_count, const char * paths[]); // TODO should one of the `*const` in `paths` be `*mut`?
 
 /** @brief The function pointer type for monitor configuration callbacks.
@@ -649,7 +648,7 @@ pub type GLFWdropfun =
 *
 *  @ingroup monitor
  */
-pub type GLFWmonitorfun = extern "C" fn(monitor: *mut GLFWmonitor, event: c_int);
+pub type MonitorFun = extern "C" fn(monitor: *mut Monitor, event: c_int);
 
 /** @brief The function pointer type for joystick configuration callbacks.
 *
@@ -670,7 +669,7 @@ pub type GLFWmonitorfun = extern "C" fn(monitor: *mut GLFWmonitor, event: c_int)
 *
 *  @ingroup input
  */
-pub type GLFWjoystickfun = extern "C" fn(jid: c_int, event: c_int);
+pub type JoystickFun = extern "C" fn(jid: c_int, event: c_int);
 
 /** @brief Video mode type.
 *
@@ -686,7 +685,7 @@ pub type GLFWjoystickfun = extern "C" fn(jid: c_int, event: c_int);
 *  @ingroup monitor
  */
 #[repr(C)]
-pub struct GLFWvidmode {
+pub struct VidMode {
     /** The width, in screen coordinates, of the video mode.
      */
     width: c_int,
@@ -720,7 +719,7 @@ pub struct GLFWvidmode {
 *  @ingroup monitor
  */
 #[repr(C)]
-pub struct GLFWgammaramp {
+pub struct GammaRamp {
     /** An array of value describing the response of the red channel.
      */
     red: *mut c_ushort,
@@ -749,7 +748,7 @@ pub struct GLFWgammaramp {
 *  @ingroup window
  */
 #[repr(C)]
-pub struct GLFWimage {
+pub struct Image {
     /** The width, in pixels, of this image.
      */
     width: c_int,
@@ -773,7 +772,7 @@ pub struct GLFWimage {
 *  @ingroup input
  */
 #[repr(C)]
-pub struct GLFWgamepadstate {
+pub struct GamepadState {
     /** The states of each [gamepad button](@ref gamepad_buttons), `GLFW_PRESS`
      *  or `GLFW_RELEASE`.
      */
@@ -797,19 +796,19 @@ pub struct GLFWgamepadstate {
 *  @ingroup init
  */
 #[repr(C)]
-pub struct GLFWallocator {
+pub struct Allocator {
     /** The memory allocation function.  See @ref GLFWallocatefun for details about
      *  allocation function.
      */
-    allocate: GLFWallocatefun,
+    allocate: AllocateFun,
     /** The memory reallocation function.  See @ref GLFWreallocatefun for details about
      *  reallocation function.
      */
-    reallocate: GLFWreallocatefun,
+    reallocate: ReallocateFun,
     /** The memory deallocation function.  See @ref GLFWdeallocatefun for details about
      *  deallocation function.
      */
-    deallocate: GLFWdeallocatefun,
+    deallocate: DeallocateFun,
     /** The user pointer for this custom allocator.  This value will be passed to the
      *  allocator functions.
      */
