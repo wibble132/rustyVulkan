@@ -41,8 +41,7 @@ pub type Vkproc = extern "C" fn();
 *
 *  @ingroup monitor
  */
-#[repr(C)]
-pub struct Monitor;
+pub enum Monitor {}
 
 /** @brief Opaque window object.
 *
@@ -54,8 +53,7 @@ pub struct Monitor;
 *
 *  @ingroup window
  */
-#[repr(C)]
-pub struct Window;
+pub enum Window {}
 
 /** @brief Opaque cursor object.
 *
@@ -67,8 +65,7 @@ pub struct Window;
 *
 *  @ingroup input
  */
-#[repr(C)]
-pub struct Cursor;
+pub enum Cursor {}
 
 /** @brief The function pointer type for memory allocation callbacks.
 *
@@ -461,7 +458,8 @@ pub type WindowContentScaleFun =
 *
 *  @ingroup input
  */
-pub type MouseButtonFun = extern "C" fn(window: *mut Window, button: c_int, action: c_int, mods: c_int);
+pub type MouseButtonFun =
+    extern "C" fn(window: *mut Window, button: c_int, action: c_int, mods: c_int);
 
 /** @brief The function pointer type for cursor position callbacks.
 *

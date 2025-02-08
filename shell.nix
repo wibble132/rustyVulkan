@@ -1,7 +1,9 @@
-{ pkgs ? (import <nixpkgs> {
-  allowUnfree = true;
-}), ... }:
-pkgs.mkShell {
+{
+  pkgs ? (import <nixpkgs> {}),
+  stdenv ? pkgs.clang13Stdenv
+}:
+stdenv.mkDerivation {
+  name = "vkTriangleRust";
 
   buildInputs = with pkgs; [
     # put packages here.
@@ -37,5 +39,6 @@ pkgs.mkShell {
   GLFW_PATH="${pkgs.glfw}";
   STB_PATH="${pkgs.stb}";
   VULKAN_SDK = "${pkgs.vulkan-headers}";
+  LIBCLANG_PATH = "${pkgs.llvmPackages_13.libclang.lib}/lib";
 }
 
