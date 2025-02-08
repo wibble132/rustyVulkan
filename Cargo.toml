@@ -7,3 +7,4 @@ members = [
 
 [workspace.dependencies]
 glfw = {path = "crates/glfw"}
+bindgen = "0.71.1"

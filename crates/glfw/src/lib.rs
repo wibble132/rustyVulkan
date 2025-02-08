@@ -1,29 +1,24 @@
-mod consts;
-mod types;
+#![allow(non_upper_case_globals)]
+#![allow(non_camel_case_types)]
+#![allow(non_snake_case)]
 
-pub use consts::*;
-pub use types::*;
-use std::ffi::{c_char, c_int};
+include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 
-#[derive(Debug)]
-pub enum Monitor {}
-
-#[derive(Debug)]
-pub enum Window {}
-
-#[link(name = "glfw")]
-extern "C" {
-    pub fn init() -> c_int;
-    pub fn terminate();
-    pub fn windowHint(hint: c_int, value: c_int);
-    pub fn createWindow(
-        width: c_int,
-        height: c_int,
-        title: *const c_char,
-        monitor: *mut Monitor,
-        share: *mut Window,
-    ) -> *mut Window;
-    pub fn windowShouldClose(window: *mut Window) -> c_int;
-    pub fn pollEvents();
-    pub fn destroyWindow(window: *mut Window);
+#[macro_export]
+macro_rules! VK_MAKE_VERSION {
+    ($major:expr,$minor:expr,$patch:expr) => {
+        ((($major as u32) << 22u32) | (($minor as u32) << 12u32) | ($patch as u32))
+    };
 }
+
+#[macro_export]
+macro_rules! VK_MAKE_API_VERSION {
+    ($variant:expr,$major:expr,$minor:expr,$patch:expr) => {
+        ((($variant as u32) << 29u32)
+            | (($major as u32) << 22u32)
+            | (($minor as u32) << 12u32)
+            | ($patch as u32))
+    };
+}
+
+pub const VK_API_VERSION_1_0: u32 = VK_MAKE_API_VERSION!(0, 1, 0, 0);
