@@ -1,10 +1,12 @@
 [package]
 name = "vk-triangle-rust"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 
 [[bin]]
 name = "vk-triangle-rust"
 
 [dependencies]
-glfw = {workspace = true}
+ash = { workspace = true, features = ["linked"] }
+glfw = { workspace = true, features = ["vulkan"] }
+bon = { workspace = true }

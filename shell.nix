@@ -33,12 +33,12 @@ stdenv.mkDerivation {
     tinyobjloader
     stb
 
-    jetbrains.rust-rover
   ];
 
   GLFW_PATH="${pkgs.glfw}";
   STB_PATH="${pkgs.stb}";
   VULKAN_SDK = "${pkgs.vulkan-headers}";
   LIBCLANG_PATH = "${pkgs.llvmPackages_13.libclang.lib}/lib";
+  LD_LIBRARY_PATH="${pkgs.wayland}/lib:${pkgs.libxkbcommon}/lib:${pkgs.glfw}/lib:${pkgs.vulkan-loader}/lib";
 }
 
