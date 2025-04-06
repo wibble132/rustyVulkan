@@ -6,5 +6,11 @@ members = [
 ]
 
 [workspace.dependencies]
-glfw = {path = "crates/glfw"}
-bindgen = "0.71.1"
+# Update to 0.71.1 is available, but causes clippy errors. See https://github.com/rust-lang/rust-bindgen/issues/3053
+ash = { version = "0.38.0+1.3.281" }
+glfw = { version = "0.59.0", features = ["wayland"] }
+bon = "3.4.0"
+
+[profile.release]
+lto = "fat"
+codegen-units = 1

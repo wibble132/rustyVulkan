@@ -1,9 +1,15 @@
 use std::fmt::{Debug, Display, Formatter};
 
-pub(crate) type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
+pub(crate) type Result<T> = std::result::Result<T, Box<dyn core::error::Error>>;
 
 pub(crate) struct Error {
     msg: String,
+}
+
+pub fn err(msg: &str) -> Error {
+    Error {
+        msg: msg.to_string(),
+    }
 }
 
 pub fn error<T>(msg: &str) -> Result<T> {
