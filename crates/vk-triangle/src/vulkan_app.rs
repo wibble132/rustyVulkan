@@ -1,11 +1,10 @@
 use crate::result::{Result, err, error};
-use ash::vk::Handle;
 use glfw::{ClientApiHint, Glfw, PWindow, WindowHint, WindowMode};
 use std::collections::BTreeSet;
 use std::ffi;
 use std::ffi::{CStr, c_char};
 use std::mem::MaybeUninit;
-use std::ptr::{addr_of, addr_of_mut, null};
+use std::ptr::null;
 use std::thread::sleep;
 use std::time::Duration;
 
@@ -38,6 +37,7 @@ struct VulkanData {
     pub swapchain_images: Vec<ash::vk::Image>,
     pub swapchain_format: ash::vk::Format,
     pub swapchain_extent: ash::vk::Extent2D,
+    pub swapchain_image_views: Vec<ash::vk::ImageView>,
 }
 
 impl VulkanApp {
@@ -115,6 +115,9 @@ impl VulkanApp {
             )
         }?;
 
+        let swapchain_image_views =
+            unsafe { Self::create_image_views(&device, &swapchain_images, swapchain_format) }?;
+
         Ok(VulkanData {
             entry,
             instance,
@@ -129,8 +132,10 @@ impl VulkanApp {
             swapchain_images,
             swapchain_format,
             swapchain_extent,
+            swapchain_image_views,
         })
     }
+
     fn main_loop(&mut self) {
         let mut x = 0;
         while !self.window.should_close() {
@@ -581,6 +586,42 @@ impl VulkanApp {
 
         Ok((swapchain, images, surface_format.format, extent))
     }
+    unsafe fn create_image_views(
+        device: &ash::Device,
+        swap_chain_images: &[ash::vk::Image],
+        swap_chain_image_format: ash::vk::Format,
+    ) -> Result<Vec<ash::vk::ImageView>> {
+        let mut swap_chain_image_views =
+            vec![ash::vk::ImageView::default(); swap_chain_images.len()];
+
+        for i in 0..swap_chain_images.len() {
+            let create_info = ash::vk::ImageViewCreateInfo::default()
+                .image(swap_chain_images[i])
+                .view_type(ash::vk::ImageViewType::TYPE_2D)
+                .format(swap_chain_image_format)
+                .components(
+                    ash::vk::ComponentMapping::default()
+                        .r(ash::vk::ComponentSwizzle::IDENTITY)
+                        .g(ash::vk::ComponentSwizzle::IDENTITY)
+                        .b(ash::vk::ComponentSwizzle::IDENTITY)
+                        .a(ash::vk::ComponentSwizzle::IDENTITY),
+                )
+                .subresource_range(
+                    ash::vk::ImageSubresourceRange::default()
+                        .aspect_mask(ash::vk::ImageAspectFlags::COLOR)
+                        .base_mip_level(0)
+                        .level_count(1)
+                        .base_array_layer(0)
+                        .layer_count(1),
+                );
+
+            let image_view = unsafe { device.create_image_view(&create_info, None) }
+                .map_err(|e| err(&format!("Failed to create image views: {e}")))?;
+            swap_chain_image_views[i] = image_view;
+        }
+
+        Ok(swap_chain_image_views)
+    }
 }
 #[derive(Debug)]
 struct QueueFamilyIndices {
@@ -620,6 +661,16 @@ impl VulkanApp {
 impl VulkanData {
     fn cleanup(self) {
         unsafe {
+            for image_view in self.swapchain_image_views {
+                self.device.destroy_image_view(image_view, None);
+            }
+        }
+        
+        unsafe {
+            _ = self.swapchain_images;
+            _ = self.swapchain_format;
+            _ = self.swapchain_extent;
+
             self.swapchain_device
                 .destroy_swapchain(self.swapchain, None);
             _ = self.swapchain;
