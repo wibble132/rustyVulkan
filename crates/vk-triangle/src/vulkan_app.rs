@@ -3,7 +3,7 @@ use glfw::{ClientApiHint, Glfw, PWindow, WindowHint, WindowMode};
 use std::collections::BTreeSet;
 use std::ffi;
 use std::mem::MaybeUninit;
-use std::ptr::{null};
+use std::ptr::null;
 use std::thread::sleep;
 use std::time::Duration;
 
@@ -37,12 +37,14 @@ struct VulkanData {
     pub swapchain_format: ash::vk::Format,
     pub swapchain_extent: ash::vk::Extent2D,
     pub swapchain_image_views: Vec<ash::vk::ImageView>,
+    pub swap_chain_framebuffers: Vec<ash::vk::Framebuffer>,
 
-    pub vert_shader_module: ash::vk::ShaderModule,
-    pub frag_shader_module: ash::vk::ShaderModule,
+    pub shader_module: ash::vk::ShaderModule,
     pub render_pass: ash::vk::RenderPass,
     pub pipeline_layout: ash::vk::PipelineLayout,
-    pub pipeline: ash::vk::Pipeline,
+    pub graphics_pipeline: ash::vk::Pipeline,
+    pub command_pool: ash::vk::CommandPool,
+    pub command_buffer: ash::vk::CommandBuffer,
 }
 
 impl VulkanApp {
@@ -125,8 +127,25 @@ impl VulkanApp {
 
         let render_pass = Self::create_render_pass(&device, swapchain_format)?;
 
-        let (vert_shader_module, frag_shader_module, pipeline_layout, pipeline) =
-            Self::create_graphics_pipeline(&device, swapchain_extent, render_pass)?;
+        let (shader_module, pipeline_layout, pipeline) =
+            Self::create_graphics_pipeline(&device, render_pass)?;
+
+        let swap_chain_framebuffers = Self::create_framebuffers(
+            &device,
+            &swapchain_image_views,
+            render_pass,
+            swapchain_extent,
+        )?;
+
+        let command_pool = Self::create_command_pool(
+            &instance,
+            &device,
+            &surface_instance,
+            physical_device,
+            surface,
+        )?;
+
+        let command_buffer = Self::create_command_buffer(&device, command_pool)?;
 
         Ok(VulkanData {
             entry,
@@ -143,11 +162,13 @@ impl VulkanApp {
             swapchain_format,
             swapchain_extent,
             swapchain_image_views,
-            vert_shader_module,
-            frag_shader_module,
+            swap_chain_framebuffers,
+            shader_module,
             render_pass,
             pipeline_layout,
-            pipeline,
+            graphics_pipeline: pipeline,
+            command_pool,
+            command_buffer,
         })
     }
 
@@ -259,7 +280,7 @@ impl VulkanApp {
                 ash::vk::DebugUtilsMessageSeverityFlagsEXT::WARNING
                     | ash::vk::DebugUtilsMessageSeverityFlagsEXT::VERBOSE
                     | ash::vk::DebugUtilsMessageSeverityFlagsEXT::ERROR
-                | ash::vk::DebugUtilsMessageSeverityFlagsEXT::INFO,
+                    | ash::vk::DebugUtilsMessageSeverityFlagsEXT::INFO,
             )
             .message_type(
                 ash::vk::DebugUtilsMessageTypeFlagsEXT::GENERAL
@@ -290,8 +311,8 @@ impl VulkanApp {
     }
 
     /// # Safety
-    /// `surface` MUST be a valid `VkSurfaceKHR` handle
-    /// `surface` MUST be created, allocated, or retrieved from `instance`
+    /// - `surface` MUST be a valid `VkSurfaceKHR` handle
+    /// - `surface` MUST be created, allocated, or retrieved from `instance`
     unsafe fn pick_physical_device(
         instance: &ash::Instance,
         surface_instance: &ash::khr::surface::Instance,
@@ -310,9 +331,9 @@ impl VulkanApp {
         device.ok_or_else(|| err("No suitable device found").into())
     }
     /// # SAFETY
-    /// `device` MUST be a valid `VkPhysicalDevice` handle
-    /// `surface` MUST be a valid `VkSurfaceKHR` handle
-    /// `device` and `surface` MUST be created, allocated, or retrieved from the same `VkInstance` `instance`
+    /// - `device` MUST be a valid `VkPhysicalDevice` handle
+    /// - `surface` MUST be a valid `VkSurfaceKHR` handle
+    /// - `device` and `surface` MUST be created, allocated, or retrieved from the same `VkInstance` `instance`
     unsafe fn is_device_suitable(
         instance: &ash::Instance,
         surface_instance: &ash::khr::surface::Instance,
@@ -371,9 +392,9 @@ impl VulkanApp {
         indices.is_complete() && extensions_supported && swap_chain_adequate
     }
     /// # SAFETY
-    /// `device` MUST be a valid `VkPhysicalDevice` handle
-    /// `surface` MUST be a valid `VkSurfaceKHR` handle
-    /// `device` and `surface` MUST be created, allocated, or retrieved from the same `VkInstance`
+    /// - `device` MUST be a valid `VkPhysicalDevice` handle
+    /// - `surface` MUST be a valid `VkSurfaceKHR` handle
+    /// - `device` and `surface` MUST be created, allocated, or retrieved from the same `VkInstance`
     unsafe fn find_queue_families(
         instance: &ash::Instance,
         surface_instance: &ash::khr::surface::Instance,
@@ -420,9 +441,9 @@ impl VulkanApp {
         indices
     }
     /// # SAFETY
-    /// `device` MUST be a valid `VkPhysicalDevice` handle
-    /// `surface` MUST be a valid `VkSurfaceKHR` handle
-    /// `device` and `surface` MUST be created, allocated, or retrieved from the same `VkInstance` `instance`
+    /// - `device` MUST be a valid `VkPhysicalDevice` handle
+    /// - `surface` MUST be a valid `VkSurfaceKHR` handle
+    /// - `device` and `surface` MUST be created, allocated, or retrieved from the same `VkInstance` `instance`
     ///
     /// # Panics
     /// If the device is not suitable (as per `is_device_suitable`), this may panic
@@ -694,26 +715,22 @@ impl VulkanApp {
     }
     fn create_graphics_pipeline(
         device: &ash::Device,
-        swapchain_extent: ash::vk::Extent2D,
         render_pass: ash::vk::RenderPass,
-    ) -> Result<(ash::vk::ShaderModule, ash::vk::ShaderModule, ash::vk::PipelineLayout, ash::vk::Pipeline)> {
+    ) -> Result<(
+        ash::vk::ShaderModule,
+        ash::vk::PipelineLayout,
+        ash::vk::Pipeline,
+    )> {
         const SHADER: &[u8] = include_bytes!(env!("shaders.spv"));
-        // dbg!(SHADER.len());
-        // let vert_shader_code = include_bytes!("vert.spv");
-        // let frag_shader_code = include_bytes!("frag.spv");
-
-        let vert_shader_module = Self::create_shader_module(device, SHADER)?;
-        let frag_shader_module = vert_shader_module;
-        // let vert_shader_module = Self::create_shader_module(device, vert_shader_code)?;
-        // let frag_shader_module = Self::create_shader_module(device, frag_shader_code)?;
+        let shader_module = Self::create_shader_module(device, SHADER)?;
 
         let vert_shader_stage_info = ash::vk::PipelineShaderStageCreateInfo::default()
             .stage(ash::vk::ShaderStageFlags::VERTEX)
-            .module(vert_shader_module)
+            .module(shader_module)
             .name(c"main_vs");
         let frag_shader_stage_info = ash::vk::PipelineShaderStageCreateInfo::default()
             .stage(ash::vk::ShaderStageFlags::FRAGMENT)
-            .module(frag_shader_module)
+            .module(shader_module)
             .name(c"main_fs");
 
         let shader_stages = [vert_shader_stage_info, frag_shader_stage_info];
@@ -724,16 +741,6 @@ impl VulkanApp {
         let input_assembly = ash::vk::PipelineInputAssemblyStateCreateInfo::default()
             .topology(ash::vk::PrimitiveTopology::TRIANGLE_LIST)
             .primitive_restart_enable(false);
-        // let viewport = ash::vk::Viewport::default()
-        //     .x(0.0)
-        //     .y(0.0)
-        //     .width(swapchain_extent.width as f32)
-        //     .height(swapchain_extent.height as f32)
-        //     .min_depth(0.0)
-        //     .max_depth(1.0);
-        // let scissor = ash::vk::Rect2D::default()
-        //     .offset(ash::vk::Offset2D { x: 0, y: 0 })
-        //     .extent(swapchain_extent);
 
         let dynamic_states = [
             ash::vk::DynamicState::VIEWPORT,
@@ -792,11 +799,137 @@ impl VulkanApp {
         let infos = &[pipeline_info];
         let pipeline = unsafe {
             device.create_graphics_pipelines(ash::vk::PipelineCache::null(), infos, None)
-        }.map_err( |(_, e)|
-            e
-        )?;
+        }
+        .map_err(|(_, e)| e)?;
 
-        Ok((vert_shader_module, frag_shader_module, pipeline_layout, pipeline[0]))
+        Ok((
+            shader_module,
+            pipeline_layout,
+            pipeline[0],
+        ))
+    }
+    fn create_framebuffers(
+        device: &ash::Device,
+        swap_chain_image_views: &[ash::vk::ImageView],
+        render_pass: ash::vk::RenderPass,
+        swap_chain_extent: ash::vk::Extent2D,
+    ) -> Result<Vec<ash::vk::Framebuffer>> {
+        let mut swap_chain_framebuffers = Vec::with_capacity(swap_chain_image_views.len());
+
+        for image_view in swap_chain_image_views {
+            let attachments = &[*image_view];
+            let framebuffer_info = ash::vk::FramebufferCreateInfo::default()
+                .render_pass(render_pass)
+                .attachments(attachments)
+                .width(swap_chain_extent.width)
+                .height(swap_chain_extent.height)
+                .layers(1);
+
+            let fb = unsafe { device.create_framebuffer(&framebuffer_info, None) }?;
+            swap_chain_framebuffers.push(fb);
+        }
+
+        Ok(swap_chain_framebuffers)
+    }
+    fn create_command_pool(
+        instance: &ash::Instance,
+        device: &ash::Device,
+        surface_instance: &ash::khr::surface::Instance,
+        physical_device: ash::vk::PhysicalDevice,
+        surface: ash::vk::SurfaceKHR,
+    ) -> Result<ash::vk::CommandPool> {
+        let queue_family_indices = unsafe {
+            Self::find_queue_families(instance, surface_instance, physical_device, surface)
+        };
+
+        let pool_info = ash::vk::CommandPoolCreateInfo::default()
+            .flags(ash::vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER)
+            .queue_family_index(queue_family_indices.graphics_family.unwrap());
+
+        let command_pool = unsafe { device.create_command_pool(&pool_info, None)? };
+        Ok(command_pool)
+    }
+    fn create_command_buffer(
+        device: &ash::Device,
+        command_pool: ash::vk::CommandPool,
+    ) -> Result<ash::vk::CommandBuffer> {
+        let alloc_info = ash::vk::CommandBufferAllocateInfo::default()
+            .command_pool(command_pool)
+            .level(ash::vk::CommandBufferLevel::PRIMARY)
+            .command_buffer_count(1);
+
+        let command_buffers = unsafe { device.allocate_command_buffers(&alloc_info) }?;
+        Ok(command_buffers[0])
+    }
+    fn record_command_buffer(
+        &self,
+        command_buffer: ash::vk::CommandBuffer,
+        image_index: u32,
+    ) -> Result<()> {
+        let begin_info = ash::vk::CommandBufferBeginInfo::default();
+        unsafe {
+            self.vulkan
+                .device
+                .begin_command_buffer(command_buffer, &begin_info)
+        }?;
+
+        let clear_values = [ash::vk::ClearValue {
+            color: ash::vk::ClearColorValue {
+                float32: [0.0, 0.0, 0.0, 1.0],
+            },
+        }];
+
+        let render_pass_info = ash::vk::RenderPassBeginInfo::default()
+            .render_pass(self.vulkan.render_pass)
+            .framebuffer(self.vulkan.swap_chain_framebuffers[image_index as usize])
+            .render_area(ash::vk::Rect2D {
+                offset: ash::vk::Offset2D { x: 0, y: 0 },
+                extent: self.vulkan.swapchain_extent,
+            })
+            .clear_values(&clear_values);
+
+        unsafe {
+            self.vulkan.device.cmd_begin_render_pass(
+                command_buffer,
+                &render_pass_info,
+                ash::vk::SubpassContents::INLINE,
+            )
+        };
+
+        // Group recording the commands in one unsafe for now
+        unsafe {
+            self.vulkan.device.cmd_bind_pipeline(
+                command_buffer,
+                ash::vk::PipelineBindPoint::GRAPHICS,
+                self.vulkan.graphics_pipeline,
+            );
+
+            let viewport = ash::vk::Viewport::default()
+                .x(0.0)
+                .y(0.0)
+                .width(self.vulkan.swapchain_extent.width as f32)
+                .height(self.vulkan.swapchain_extent.height as f32)
+                .min_depth(0.0)
+                .max_depth(1.0);
+            self.vulkan
+                .device
+                .cmd_set_viewport(command_buffer, 0, &[viewport]);
+
+            let scissor = ash::vk::Rect2D::default()
+                .offset(ash::vk::Offset2D { x: 0, y: 0 })
+                .extent(self.vulkan.swapchain_extent);
+            self.vulkan
+                .device
+                .cmd_set_scissor(command_buffer, 0, &[scissor]);
+
+            self.vulkan.device.cmd_draw(command_buffer, 3, 1, 0, 0);
+
+            self.vulkan.device.cmd_end_render_pass(command_buffer);
+        }
+
+        unsafe { self.vulkan.device.end_command_buffer(command_buffer) }?;
+
+        Ok(())
     }
 }
 #[derive(Debug)]
@@ -838,15 +971,19 @@ impl VulkanApp {
 impl VulkanData {
     fn cleanup(self) {
         unsafe {
-            self.device.destroy_pipeline(self.pipeline, None);
+            self.device.destroy_command_pool(self.command_pool, None);
+            self.device.destroy_pipeline(self.graphics_pipeline, None);
             self.device
                 .destroy_pipeline_layout(self.pipeline_layout, None);
             self.device.destroy_render_pass(self.render_pass, None);
-            self.device.destroy_shader_module(self.vert_shader_module, None);
-            // self.device.destroy_shader_module(self.frag_shader_module, None);
+            self.device
+                .destroy_shader_module(self.shader_module, None);
         }
 
         unsafe {
+            for framebuffer in self.swap_chain_framebuffers {
+                self.device.destroy_framebuffer(framebuffer, None);
+            }
             for image_view in self.swapchain_image_views {
                 self.device.destroy_image_view(image_view, None);
             }
