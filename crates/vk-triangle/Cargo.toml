@@ -1,7 +1,7 @@
 [package]
 name = "vk-triangle-rust"
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
 
 [[bin]]
 name = "vk-triangle-rust"
@@ -10,3 +10,7 @@ name = "vk-triangle-rust"
 ash = { workspace = true, features = ["linked"] }
 glfw = { workspace = true, features = ["vulkan"] }
 bon = { workspace = true }
+
+[build-dependencies]
+spirv-builder = {workspace = true}
+
