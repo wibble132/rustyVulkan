@@ -45,6 +45,10 @@ struct VulkanData {
     pub graphics_pipeline: ash::vk::Pipeline,
     pub command_pool: ash::vk::CommandPool,
     pub command_buffer: ash::vk::CommandBuffer,
+
+    pub image_available_semaphore: ash::vk::Semaphore,
+    pub render_finished_semaphore: ash::vk::Semaphore,
+    pub in_flight_fence: ash::vk::Fence,
 }
 
 impl VulkanApp {
@@ -127,7 +131,7 @@ impl VulkanApp {
 
         let render_pass = Self::create_render_pass(&device, swapchain_format)?;
 
-        let (shader_module, pipeline_layout, pipeline) =
+        let (shader_module, pipeline_layout, graphics_pipeline) =
             Self::create_graphics_pipeline(&device, render_pass)?;
 
         let swap_chain_framebuffers = Self::create_framebuffers(
@@ -146,6 +150,9 @@ impl VulkanApp {
         )?;
 
         let command_buffer = Self::create_command_buffer(&device, command_pool)?;
+
+        let (image_available_semaphore, render_finished_semaphore, in_flight_fence) =
+            Self::create_sync_objects(&device)?;
 
         Ok(VulkanData {
             entry,
@@ -166,9 +173,12 @@ impl VulkanApp {
             shader_module,
             render_pass,
             pipeline_layout,
-            graphics_pipeline: pipeline,
+            graphics_pipeline,
             command_pool,
             command_buffer,
+            image_available_semaphore,
+            render_finished_semaphore,
+            in_flight_fence,
         })
     }
 
@@ -176,12 +186,18 @@ impl VulkanApp {
         let mut x = 0;
         while !self.window.should_close() {
             self.glfw.poll_events();
+            self.draw_frame().unwrap();
+
             sleep(Duration::from_millis(33));
             x += 1;
             if x == 100 {
                 println!("This has gone on long enough!");
                 break;
             }
+        }
+        
+        unsafe {
+            _ = self.vulkan.device.device_wait_idle();
         }
     }
 }
@@ -694,11 +710,21 @@ impl VulkanApp {
             .pipeline_bind_point(ash::vk::PipelineBindPoint::GRAPHICS)
             .color_attachments(&attachment_refs);
 
+        let dependency = ash::vk::SubpassDependency::default()
+            .src_subpass(ash::vk::SUBPASS_EXTERNAL)
+            .dst_subpass(0)
+            .src_stage_mask(ash::vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT)
+            .src_access_mask(ash::vk::AccessFlags::empty())
+            .dst_stage_mask(ash::vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT)
+            .dst_access_mask(ash::vk::AccessFlags::COLOR_ATTACHMENT_WRITE);
+
         let subpasses = [subpass];
         let attachments = [colour_attachment];
+        let dependencies = [dependency];
         let render_pass_info = ash::vk::RenderPassCreateInfo::default()
             .attachments(&attachments)
-            .subpasses(&subpasses);
+            .subpasses(&subpasses)
+            .dependencies(&dependencies);
 
         let render_pass = unsafe { device.create_render_pass(&render_pass_info, None) }?;
         Ok(render_pass)
@@ -802,11 +828,7 @@ impl VulkanApp {
         }
         .map_err(|(_, e)| e)?;
 
-        Ok((
-            shader_module,
-            pipeline_layout,
-            pipeline[0],
-        ))
+        Ok((shader_module, pipeline_layout, pipeline[0]))
     }
     fn create_framebuffers(
         device: &ash::Device,
@@ -860,6 +882,19 @@ impl VulkanApp {
 
         let command_buffers = unsafe { device.allocate_command_buffers(&alloc_info) }?;
         Ok(command_buffers[0])
+    }
+    fn create_sync_objects(
+        device: &ash::Device,
+    ) -> Result<(ash::vk::Semaphore, ash::vk::Semaphore, ash::vk::Fence)> {
+        let semaphore_info = ash::vk::SemaphoreCreateInfo::default();
+        let fence_info =
+            ash::vk::FenceCreateInfo::default().flags(ash::vk::FenceCreateFlags::SIGNALED);
+
+        let s1 = unsafe { device.create_semaphore(&semaphore_info, None) }?;
+        let s2 = unsafe { device.create_semaphore(&semaphore_info, None) }?;
+        let f = unsafe { device.create_fence(&fence_info, None) }?;
+
+        Ok((s1, s2, f))
     }
     fn record_command_buffer(
         &self,
@@ -931,6 +966,68 @@ impl VulkanApp {
 
         Ok(())
     }
+    fn draw_frame(&mut self) -> Result<()> {
+        unsafe {
+            self.vulkan
+                .device
+                .wait_for_fences(&[self.vulkan.in_flight_fence], true, u64::MAX)
+        }?;
+        unsafe {
+            self.vulkan
+                .device
+                .reset_fences(&[self.vulkan.in_flight_fence])?;
+        }
+
+        let (image_index, _) = unsafe {
+            self.vulkan.swapchain_device.acquire_next_image(
+                self.vulkan.swapchain,
+                u64::MAX,
+                self.vulkan.image_available_semaphore,
+                ash::vk::Fence::null(),
+            )
+        }?;
+
+        unsafe {
+            self.vulkan.device.reset_command_buffer(
+                self.vulkan.command_buffer,
+                ash::vk::CommandBufferResetFlags::default(),
+            )?;
+            self.record_command_buffer(self.vulkan.command_buffer, image_index)?;
+        }
+
+        let wait_semaphores = [self.vulkan.image_available_semaphore];
+        let wait_stages = [ash::vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
+        let command_buffers = [self.vulkan.command_buffer];
+        let signal_semaphores = [self.vulkan.render_finished_semaphore];
+        let submit_info = ash::vk::SubmitInfo::default()
+            .wait_semaphores(&wait_semaphores)
+            .wait_dst_stage_mask(&wait_stages)
+            .command_buffers(&command_buffers)
+            .signal_semaphores(&signal_semaphores);
+        let submit_info = [submit_info];
+
+        unsafe {
+            self.vulkan.device.queue_submit(
+                self.vulkan.graphics_queue,
+                &submit_info,
+                self.vulkan.in_flight_fence,
+            )
+        }?;
+
+        let swapchains = [self.vulkan.swapchain];
+        let image_indices = [image_index];
+        let present_info = ash::vk::PresentInfoKHR::default()
+            .wait_semaphores(&signal_semaphores)
+            .swapchains(&swapchains)
+            .image_indices(&image_indices);
+        unsafe {
+            self.vulkan
+                .swapchain_device
+                .queue_present(self.vulkan.present_queue, &present_info)
+        }?;
+
+        Ok(())
+    }
 }
 #[derive(Debug)]
 struct QueueFamilyIndices {
@@ -971,13 +1068,20 @@ impl VulkanApp {
 impl VulkanData {
     fn cleanup(self) {
         unsafe {
+            self.device
+                .destroy_semaphore(self.image_available_semaphore, None);
+            self.device
+                .destroy_semaphore(self.render_finished_semaphore, None);
+            self.device.destroy_fence(self.in_flight_fence, None);
+        }
+
+        unsafe {
             self.device.destroy_command_pool(self.command_pool, None);
             self.device.destroy_pipeline(self.graphics_pipeline, None);
             self.device
                 .destroy_pipeline_layout(self.pipeline_layout, None);
             self.device.destroy_render_pass(self.render_pass, None);
-            self.device
-                .destroy_shader_module(self.shader_module, None);
+            self.device.destroy_shader_module(self.shader_module, None);
         }
 
         unsafe {
