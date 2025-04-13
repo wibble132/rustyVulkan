@@ -1,14 +1,13 @@
-use crate::result::{Result, err, error};
+use crate::result::{err, error, Result};
 use glfw::{ClientApiHint, Glfw, PWindow, WindowHint, WindowMode};
 use std::collections::BTreeSet;
 use std::ffi;
-use std::ffi::{CStr, c_char};
 use std::mem::MaybeUninit;
-use std::ptr::null;
+use std::ptr::{null};
 use std::thread::sleep;
 use std::time::Duration;
 
-const VALIDATION_LAYERS: &[*const c_char] = &[c"VK_LAYER_KHRONOS_validation".as_ptr()];
+const VALIDATION_LAYERS: &[*const ffi::c_char] = &[c"VK_LAYER_KHRONOS_validation".as_ptr()];
 const ENABLE_VALIDATION: bool = cfg!(any(debug_assertions, not(debug_assertions)));
 static DEVICE_EXTENSIONS: &[&ffi::CStr] = &[ash::vk::KHR_SWAPCHAIN_NAME];
 
@@ -38,6 +37,12 @@ struct VulkanData {
     pub swapchain_format: ash::vk::Format,
     pub swapchain_extent: ash::vk::Extent2D,
     pub swapchain_image_views: Vec<ash::vk::ImageView>,
+
+    pub vert_shader_module: ash::vk::ShaderModule,
+    pub frag_shader_module: ash::vk::ShaderModule,
+    pub render_pass: ash::vk::RenderPass,
+    pub pipeline_layout: ash::vk::PipelineLayout,
+    pub pipeline: ash::vk::Pipeline,
 }
 
 impl VulkanApp {
@@ -116,7 +121,12 @@ impl VulkanApp {
         }?;
 
         let swapchain_image_views =
-            unsafe { Self::create_image_views(&device, &swapchain_images, swapchain_format) }?;
+            Self::create_image_views(&device, &swapchain_images, swapchain_format)?;
+
+        let render_pass = Self::create_render_pass(&device, swapchain_format)?;
+
+        let (vert_shader_module, frag_shader_module, pipeline_layout, pipeline) =
+            Self::create_graphics_pipeline(&device, swapchain_extent, render_pass)?;
 
         Ok(VulkanData {
             entry,
@@ -133,6 +143,11 @@ impl VulkanApp {
             swapchain_format,
             swapchain_extent,
             swapchain_image_views,
+            vert_shader_module,
+            frag_shader_module,
+            render_pass,
+            pipeline_layout,
+            pipeline,
         })
     }
 
@@ -170,7 +185,7 @@ impl VulkanApp {
             .application_version(ash::vk::make_api_version(0, 1, 0, 0))
             .engine_name(c"No engine")
             .engine_version(ash::vk::make_api_version(0, 1, 0, 0))
-            .api_version(ash::vk::API_VERSION_1_3);
+            .api_version(ash::vk::API_VERSION_1_2);
 
         let create_info = ash::vk::InstanceCreateInfo::default()
             .application_info(&application_info)
@@ -243,7 +258,8 @@ impl VulkanApp {
             .message_severity(
                 ash::vk::DebugUtilsMessageSeverityFlagsEXT::WARNING
                     | ash::vk::DebugUtilsMessageSeverityFlagsEXT::VERBOSE
-                    | ash::vk::DebugUtilsMessageSeverityFlagsEXT::ERROR,
+                    | ash::vk::DebugUtilsMessageSeverityFlagsEXT::ERROR
+                | ash::vk::DebugUtilsMessageSeverityFlagsEXT::INFO,
             )
             .message_type(
                 ash::vk::DebugUtilsMessageTypeFlagsEXT::GENERAL
@@ -306,6 +322,15 @@ impl VulkanApp {
         let device_properties = unsafe { instance.get_physical_device_properties(device) };
         let device_features = unsafe { instance.get_physical_device_features(device) };
 
+        let mut features12 = ash::vk::PhysicalDeviceVulkan12Features::default();
+        let mut device_features2 =
+            ash::vk::PhysicalDeviceFeatures2::default().push_next(&mut features12);
+        unsafe { instance.get_physical_device_features2(device, &mut device_features2) };
+
+        if features12.vulkan_memory_model == ash::vk::FALSE {
+            return false;
+        }
+
         // No features needed for now, left here for future reference to use them though
         let _ = (device_properties, device_features);
 
@@ -324,8 +349,8 @@ impl VulkanApp {
             };
             DEVICE_EXTENSIONS.iter().all(|&required| {
                 available_extensions.iter().any(|available|
-                        // Safety: extension name is valid null-terminated utf-8 string 
-                        required == unsafe { CStr::from_ptr(available.extension_name.as_ptr()) })
+                    // Safety: extension name is valid null-terminated utf-8 string
+                    required == unsafe { ffi::CStr::from_ptr(available.extension_name.as_ptr()) })
             });
 
             true
@@ -434,10 +459,13 @@ impl VulkanApp {
             .iter()
             .map(|x| x.as_ptr())
             .collect::<Vec<_>>();
+
+        let mut x = ash::vk::PhysicalDeviceVulkan12Features::default().vulkan_memory_model(true);
         let create_info = ash::vk::DeviceCreateInfo::default()
             .queue_create_infos(&queue_create_infos)
             .enabled_features(&device_features)
-            .enabled_extension_names(&extensions);
+            .enabled_extension_names(&extensions)
+            .push_next(&mut x);
 
         let device = unsafe { instance.create_device(physical_device, &create_info, None) }?;
 
@@ -586,7 +614,7 @@ impl VulkanApp {
 
         Ok((swapchain, images, surface_format.format, extent))
     }
-    unsafe fn create_image_views(
+    fn create_image_views(
         device: &ash::Device,
         swap_chain_images: &[ash::vk::Image],
         swap_chain_image_format: ash::vk::Format,
@@ -622,6 +650,154 @@ impl VulkanApp {
 
         Ok(swap_chain_image_views)
     }
+    fn create_render_pass(
+        device: &ash::Device,
+        swapchain_image_format: ash::vk::Format,
+    ) -> Result<ash::vk::RenderPass> {
+        let colour_attachment = ash::vk::AttachmentDescription::default()
+            .format(swapchain_image_format)
+            .samples(ash::vk::SampleCountFlags::TYPE_1)
+            .load_op(ash::vk::AttachmentLoadOp::CLEAR)
+            .store_op(ash::vk::AttachmentStoreOp::STORE)
+            .stencil_load_op(ash::vk::AttachmentLoadOp::DONT_CARE)
+            .stencil_store_op(ash::vk::AttachmentStoreOp::DONT_CARE)
+            .initial_layout(ash::vk::ImageLayout::UNDEFINED)
+            .final_layout(ash::vk::ImageLayout::PRESENT_SRC_KHR);
+
+        let attachment_ref = ash::vk::AttachmentReference::default()
+            .attachment(0)
+            .layout(ash::vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
+
+        let attachment_refs = [attachment_ref];
+        let subpass = ash::vk::SubpassDescription::default()
+            .pipeline_bind_point(ash::vk::PipelineBindPoint::GRAPHICS)
+            .color_attachments(&attachment_refs);
+
+        let subpasses = [subpass];
+        let attachments = [colour_attachment];
+        let render_pass_info = ash::vk::RenderPassCreateInfo::default()
+            .attachments(&attachments)
+            .subpasses(&subpasses);
+
+        let render_pass = unsafe { device.create_render_pass(&render_pass_info, None) }?;
+        Ok(render_pass)
+    }
+    fn create_shader_module(device: &ash::Device, code: &[u8]) -> Result<ash::vk::ShaderModule> {
+        let create_info = ash::vk::ShaderModuleCreateInfo {
+            code_size: code.len(),
+            p_code: code.as_ptr() as _,
+            ..Default::default()
+        };
+
+        let shader_module = unsafe { device.create_shader_module(&create_info, None) }?;
+        Ok(shader_module)
+    }
+    fn create_graphics_pipeline(
+        device: &ash::Device,
+        swapchain_extent: ash::vk::Extent2D,
+        render_pass: ash::vk::RenderPass,
+    ) -> Result<(ash::vk::ShaderModule, ash::vk::ShaderModule, ash::vk::PipelineLayout, ash::vk::Pipeline)> {
+        const SHADER: &[u8] = include_bytes!(env!("shaders.spv"));
+        // dbg!(SHADER.len());
+        // let vert_shader_code = include_bytes!("vert.spv");
+        // let frag_shader_code = include_bytes!("frag.spv");
+
+        let vert_shader_module = Self::create_shader_module(device, SHADER)?;
+        let frag_shader_module = vert_shader_module;
+        // let vert_shader_module = Self::create_shader_module(device, vert_shader_code)?;
+        // let frag_shader_module = Self::create_shader_module(device, frag_shader_code)?;
+
+        let vert_shader_stage_info = ash::vk::PipelineShaderStageCreateInfo::default()
+            .stage(ash::vk::ShaderStageFlags::VERTEX)
+            .module(vert_shader_module)
+            .name(c"main_vs");
+        let frag_shader_stage_info = ash::vk::PipelineShaderStageCreateInfo::default()
+            .stage(ash::vk::ShaderStageFlags::FRAGMENT)
+            .module(frag_shader_module)
+            .name(c"main_fs");
+
+        let shader_stages = [vert_shader_stage_info, frag_shader_stage_info];
+
+        let vertex_input_info = ash::vk::PipelineVertexInputStateCreateInfo::default()
+            .vertex_binding_descriptions(&[])
+            .vertex_attribute_descriptions(&[]);
+        let input_assembly = ash::vk::PipelineInputAssemblyStateCreateInfo::default()
+            .topology(ash::vk::PrimitiveTopology::TRIANGLE_LIST)
+            .primitive_restart_enable(false);
+        // let viewport = ash::vk::Viewport::default()
+        //     .x(0.0)
+        //     .y(0.0)
+        //     .width(swapchain_extent.width as f32)
+        //     .height(swapchain_extent.height as f32)
+        //     .min_depth(0.0)
+        //     .max_depth(1.0);
+        // let scissor = ash::vk::Rect2D::default()
+        //     .offset(ash::vk::Offset2D { x: 0, y: 0 })
+        //     .extent(swapchain_extent);
+
+        let dynamic_states = [
+            ash::vk::DynamicState::VIEWPORT,
+            ash::vk::DynamicState::SCISSOR,
+        ];
+        let dynamic_state =
+            ash::vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&dynamic_states);
+
+        let viewport_state = ash::vk::PipelineViewportStateCreateInfo::default()
+            .viewport_count(1)
+            .scissor_count(1);
+
+        let rasterizer = ash::vk::PipelineRasterizationStateCreateInfo::default()
+            .depth_clamp_enable(false)
+            .rasterizer_discard_enable(false)
+            .polygon_mode(ash::vk::PolygonMode::FILL)
+            .line_width(1.0)
+            .cull_mode(ash::vk::CullModeFlags::BACK)
+            .front_face(ash::vk::FrontFace::CLOCKWISE)
+            .depth_bias_enable(false);
+
+        let multisampling = ash::vk::PipelineMultisampleStateCreateInfo::default()
+            .sample_shading_enable(false)
+            .rasterization_samples(ash::vk::SampleCountFlags::TYPE_1);
+
+        let colour_blend_attachment = ash::vk::PipelineColorBlendAttachmentState::default()
+            .color_write_mask(
+                ash::vk::ColorComponentFlags::R
+                    | ash::vk::ColorComponentFlags::G
+                    | ash::vk::ColorComponentFlags::B,
+            )
+            .blend_enable(false);
+
+        let colour_blend_attachments = [colour_blend_attachment];
+        let colour_blending = ash::vk::PipelineColorBlendStateCreateInfo::default()
+            .logic_op_enable(false)
+            .attachments(&colour_blend_attachments);
+
+        let pipeline_layout_info = ash::vk::PipelineLayoutCreateInfo::default();
+        let pipeline_layout =
+            unsafe { device.create_pipeline_layout(&pipeline_layout_info, None) }?;
+
+        let pipeline_info = ash::vk::GraphicsPipelineCreateInfo::default()
+            .stages(&shader_stages)
+            .vertex_input_state(&vertex_input_info)
+            .input_assembly_state(&input_assembly)
+            .viewport_state(&viewport_state)
+            .rasterization_state(&rasterizer)
+            .multisample_state(&multisampling)
+            .color_blend_state(&colour_blending)
+            .dynamic_state(&dynamic_state)
+            .layout(pipeline_layout)
+            .render_pass(render_pass)
+            .subpass(0);
+
+        let infos = &[pipeline_info];
+        let pipeline = unsafe {
+            device.create_graphics_pipelines(ash::vk::PipelineCache::null(), infos, None)
+        }.map_err( |(_, e)|
+            e
+        )?;
+
+        Ok((vert_shader_module, frag_shader_module, pipeline_layout, pipeline[0]))
+    }
 }
 #[derive(Debug)]
 struct QueueFamilyIndices {
@@ -648,7 +824,8 @@ unsafe extern "system" fn debug_callback(
     _p_user_data: *mut ffi::c_void,
 ) -> ash::vk::Bool32 {
     let message = unsafe { ffi::CStr::from_ptr((*p_callback_data).p_message) };
-    println!("{message_severity:?} {message_types:?}, {message:?}");
+    let message = message.to_str().unwrap();
+    println!("{message_severity:?}-{message_types:?}: {message}");
 
     ash::vk::FALSE
 }
@@ -661,11 +838,20 @@ impl VulkanApp {
 impl VulkanData {
     fn cleanup(self) {
         unsafe {
+            self.device.destroy_pipeline(self.pipeline, None);
+            self.device
+                .destroy_pipeline_layout(self.pipeline_layout, None);
+            self.device.destroy_render_pass(self.render_pass, None);
+            self.device.destroy_shader_module(self.vert_shader_module, None);
+            // self.device.destroy_shader_module(self.frag_shader_module, None);
+        }
+
+        unsafe {
             for image_view in self.swapchain_image_views {
                 self.device.destroy_image_view(image_view, None);
             }
         }
-        
+
         unsafe {
             _ = self.swapchain_images;
             _ = self.swapchain_format;
