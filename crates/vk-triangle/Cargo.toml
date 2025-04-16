@@ -7,9 +7,9 @@ edition = "2021"
 name = "vk-triangle-rust"
 
 [dependencies]
-ash = { workspace = true, features = ["linked"] }
+ash = { workspace = true }
 glfw = { workspace = true, features = ["vulkan"] }
 
 [build-dependencies]
-spirv-builder = {workspace = true}
+spirv-builder = { workspace = true }
 

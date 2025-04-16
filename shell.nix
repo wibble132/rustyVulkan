@@ -7,8 +7,6 @@ stdenv.mkDerivation {
 
   buildInputs = with pkgs; [
     # put packages here.
-    glslang
-    shaderc # glslc
     vulkan-tools
     vulkan-headers
     spirv-tools

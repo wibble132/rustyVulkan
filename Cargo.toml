@@ -7,11 +7,10 @@ members = [
 ]
 
 [workspace.dependencies]
-# Update to 0.71.1 is available, but causes clippy errors. See https://github.com/rust-lang/rust-bindgen/issues/3053
-ash = { version = "0.38.0+1.3.281" }
+ash = { version = "0.38.0+1.3.281"}
 glfw = { version = "0.59.0", features = ["wayland"] }
-spirv-std = { git = "https://github.com/rust-gpu/rust-gpu", rev = "05042d1713012862be103e85bfd2c15dfeccda7b" }
-spirv-builder = { git = "https://github.com/rust-gpu/rust-gpu", rev = "05042d1713012862be103e85bfd2c15dfeccda7b", default-features = false, features = ["use-installed-tools"] }
+spirv-std = { git = "https://github.com/rust-gpu/rust-gpu", rev = "175c175cd8a25722f284010fd9c7b70725449956" }
+spirv-builder = { git = "https://github.com/rust-gpu/rust-gpu", rev = "175c175cd8a25722f284010fd9c7b70725449956" }
 
 [profile.release]
 lto = "fat"
@@ -19,6 +18,7 @@ codegen-units = 1
 
 # Compile build-dependencies in release mode with
 # the same settings as regular dependencies.
+# Notably, this is needed for compiling the shaders with optimisations
 [profile.release.build-override]
 opt-level = 3
 codegen-units = 16
