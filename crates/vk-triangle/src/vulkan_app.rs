@@ -4,6 +4,8 @@ use std::collections::BTreeSet;
 use std::ffi;
 use std::mem::MaybeUninit;
 use std::ptr::null;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 const VALIDATION_LAYERS: &[*const ffi::c_char] = &[c"VK_LAYER_KHRONOS_validation".as_ptr()];
@@ -18,6 +20,8 @@ pub(crate) struct VulkanApp {
     vulkan: VulkanData,
 
     current_frame: u32,
+
+    framebuffer_resized: Arc<AtomicBool>,
 }
 
 struct VulkanData {
@@ -27,8 +31,10 @@ struct VulkanData {
     pub debug_utils_instance: Option<ash::ext::debug_utils::Instance>,
     pub debug_callback: Option<ash::vk::DebugUtilsMessengerEXT>,
 
+    pub surface_instance: ash::khr::surface::Instance,
     pub surface: ash::vk::SurfaceKHR,
 
+    pub physical_device: ash::vk::PhysicalDevice,
     pub device: ash::Device,
     pub graphics_queue: ash::vk::Queue,
     pub present_queue: ash::vk::Queue,
@@ -57,7 +63,7 @@ impl VulkanApp {
     pub(crate) fn new() -> Result<Self> {
         // Initialise
         println!("Creating vulkan app");
-        let (glfw, window) = Self::init_window()?;
+        let (glfw, window, framebuffer_resized) = Self::init_window()?;
         let vulkan = Self::init_vulkan(&glfw, &window)?;
 
         Ok(Self {
@@ -65,6 +71,7 @@ impl VulkanApp {
             window,
             vulkan,
             current_frame: 0,
+            framebuffer_resized,
         })
     }
 }
@@ -77,7 +84,7 @@ impl VulkanApp {
         self.main_loop();
     }
 
-    fn init_window() -> Result<(Glfw, PWindow)> {
+    fn init_window() -> Result<(Glfw, PWindow, Arc<AtomicBool>)> {
         let callback = |x, y| println!("Callback error while loading glfw: {x}, {y}");
         let mut glfw =
             glfw::init(callback).map_err(|e| err(&format!("Failed to initialise glfw: {e:?}")))?;
@@ -85,13 +92,21 @@ impl VulkanApp {
         // Disable OpenGL since we want to use Vulkan
         glfw.window_hint(WindowHint::ClientApi(ClientApiHint::NoApi));
         // Disable resizing until we support recreating the swapchain
-        glfw.window_hint(WindowHint::Resizable(false));
+        glfw.window_hint(WindowHint::Resizable(true));
 
-        let (window, _) = glfw
+        let (mut window, _) = glfw
             .create_window(Self::WIDTH, Self::HEIGHT, "Vulkan", WindowMode::Windowed)
             .ok_or(err("Failed to create a window"))?;
 
-        Ok((glfw, window))
+        let framebuffer_resized = Arc::new(AtomicBool::new(false));
+        {
+            let fb_resize = framebuffer_resized.clone();
+            window.set_framebuffer_size_callback(move |_, _, _| {
+                fb_resize.store(true, Ordering::Relaxed)
+            });
+        }
+
+        Ok((glfw, window, framebuffer_resized))
     }
     fn init_vulkan(glfw: &Glfw, window: &glfw::Window) -> Result<VulkanData> {
         // TODO Consider safety arguments of dynamically loading the library, and maybe handle a failure with some nicer logs?
@@ -163,6 +178,8 @@ impl VulkanApp {
             debug_utils_instance,
             debug_callback,
             surface,
+            surface_instance,
+            physical_device,
             device,
             graphics_queue,
             present_queue,
@@ -1010,19 +1027,32 @@ impl VulkanApp {
                 true,
                 u64::MAX,
             )?;
-            self.vulkan
-                .device
-                .reset_fences(&[self.vulkan.in_flight_fences[current_frame]])?;
         }
 
-        let (image_index, _) = unsafe {
+        let acquire_image_result = unsafe {
             self.vulkan.swapchain_device.acquire_next_image(
                 self.vulkan.swapchain,
                 u64::MAX,
                 self.vulkan.image_available_semaphores[current_frame],
                 ash::vk::Fence::null(),
             )
-        }?;
+        };
+
+        let image_index = match acquire_image_result {
+            Err(ash::vk::Result::ERROR_OUT_OF_DATE_KHR) => {
+                self.recreate_swap_chain()?;
+                return Ok(());
+            }
+            Ok((image_index, _)) => image_index,
+            Err(e) => return Err(e.into()),
+        };
+
+        unsafe {
+            // Only reset fences if we are submitting work
+            self.vulkan
+                .device
+                .reset_fences(&[self.vulkan.in_flight_fences[current_frame]])?;
+        }
 
         unsafe {
             self.vulkan.device.reset_command_buffer(
@@ -1057,13 +1087,74 @@ impl VulkanApp {
             .wait_semaphores(&signal_semaphores)
             .swapchains(&swapchains)
             .image_indices(&image_indices);
-        unsafe {
+
+        let present_result = unsafe {
             self.vulkan
                 .swapchain_device
                 .queue_present(self.vulkan.present_queue, &present_info)
-        }?;
+        };
+        let resized = self.framebuffer_resized.load(Ordering::Relaxed);
+        match (present_result, resized) {
+            (Ok(true), _) | (_, true) => {
+                // Suboptimal or resized
+                self.framebuffer_resized.store(false, Ordering::Relaxed);
+                self.recreate_swap_chain()?;
+            }
+            (Err(e), _) => return Err(e.into()),
+            (Ok(false), false) => { /* All good */ }
+        }
 
         self.current_frame = (self.current_frame + 1) % MAX_FRAMES_IN_FLIGHT;
+
+        Ok(())
+    }
+    fn recreate_swap_chain(&mut self) -> Result<()> {
+        let (mut width, mut height) = self.window.get_framebuffer_size();
+        while width == 0 && height == 0 {
+            (width, height) = self.window.get_framebuffer_size();
+            self.glfw.wait_events()
+        }
+
+        unsafe { self.vulkan.device.device_wait_idle() }?;
+
+        unsafe {
+            VulkanData::cleanup_swapchain(
+                &self.vulkan.device,
+                &self.vulkan.swapchain_device,
+                std::mem::take(&mut self.vulkan.swap_chain_framebuffers),
+                std::mem::take(&mut self.vulkan.swapchain_image_views),
+                self.vulkan.swapchain,
+            );
+        }
+
+        (
+            self.vulkan.swapchain,
+            self.vulkan.swapchain_images,
+            self.vulkan.swapchain_format,
+            self.vulkan.swapchain_extent,
+        ) = unsafe {
+            Self::create_swap_chain(
+                &self.window,
+                &self.vulkan.instance,
+                &self.vulkan.surface_instance,
+                &self.vulkan.swapchain_device,
+                self.vulkan.physical_device,
+                self.vulkan.surface,
+            )
+        }?;
+
+        self.vulkan.swapchain_image_views = Self::create_image_views(
+            &self.vulkan.device,
+            &self.vulkan.swapchain_images,
+            self.vulkan.swapchain_format,
+        )?;
+
+        self.vulkan.swap_chain_framebuffers = Self::create_framebuffers(
+            &self.vulkan.device,
+            &self.vulkan.swapchain_image_views,
+            self.vulkan.render_pass,
+            self.vulkan.swapchain_extent,
+        )?;
 
         Ok(())
     }
@@ -1105,6 +1196,24 @@ impl VulkanApp {
     }
 }
 impl VulkanData {
+    unsafe fn cleanup_swapchain(
+        device: &ash::Device,
+        swapchain_device: &ash::khr::swapchain::Device,
+        framebuffers: Vec<ash::vk::Framebuffer>,
+        image_views: Vec<ash::vk::ImageView>,
+        swapchain: ash::vk::SwapchainKHR,
+    ) {
+        unsafe {
+            for framebuffer in framebuffers {
+                device.destroy_framebuffer(framebuffer, None);
+            }
+            for image_view in image_views {
+                device.destroy_image_view(image_view, None);
+            }
+
+            swapchain_device.destroy_swapchain(swapchain, None);
+        }
+    }
     fn cleanup(self) {
         unsafe {
             for sem in self.image_available_semaphores {
@@ -1128,24 +1237,14 @@ impl VulkanData {
         }
 
         unsafe {
-            for framebuffer in self.swap_chain_framebuffers {
-                self.device.destroy_framebuffer(framebuffer, None);
-            }
-            for image_view in self.swapchain_image_views {
-                self.device.destroy_image_view(image_view, None);
-            }
-        }
-
-        unsafe {
-            _ = self.swapchain_images;
-            _ = self.swapchain_format;
-            _ = self.swapchain_extent;
-
-            self.swapchain_device
-                .destroy_swapchain(self.swapchain, None);
-            _ = self.swapchain;
-            _ = self.swapchain_device;
-        }
+            Self::cleanup_swapchain(
+                &self.device,
+                &self.swapchain_device,
+                self.swap_chain_framebuffers,
+                self.swapchain_image_views,
+                self.swapchain,
+            )
+        };
 
         unsafe {
             self.device.destroy_device(None);
