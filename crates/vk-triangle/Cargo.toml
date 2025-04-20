@@ -9,6 +9,7 @@ name = "vk-triangle-rust"
 [dependencies]
 ash = { workspace = true }
 glfw = { workspace = true, features = ["vulkan"] }
+glm = { workspace = true }
 
 [build-dependencies]
 spirv-builder = { workspace = true }

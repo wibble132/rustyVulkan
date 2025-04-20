@@ -2,7 +2,7 @@ use crate::result::{err, error, Result};
 use glfw::{ClientApiHint, Glfw, PWindow, WindowHint, WindowMode};
 use std::collections::BTreeSet;
 use std::ffi;
-use std::mem::MaybeUninit;
+use std::mem::{offset_of, MaybeUninit};
 use std::ptr::null;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -52,11 +52,57 @@ struct VulkanData {
     pub pipeline_layout: ash::vk::PipelineLayout,
     pub graphics_pipeline: ash::vk::Pipeline,
     pub command_pool: ash::vk::CommandPool,
+    pub vertex_buffer: ash::vk::Buffer,
+    pub vertex_buffer_memory: ash::vk::DeviceMemory,
     pub command_buffers: Vec<ash::vk::CommandBuffer>,
 
     pub image_available_semaphores: Vec<ash::vk::Semaphore>,
     pub render_finished_semaphores: Vec<ash::vk::Semaphore>,
     pub in_flight_fences: Vec<ash::vk::Fence>,
+}
+
+struct VertexData {
+    pub position: glm::Vec2,
+    pub colour: glm::Vec3,
+}
+
+#[rustfmt::skip]
+const VERTICES: [VertexData; 3] = [
+    VertexData { 
+        position: glm::Vec2 { x: 0.0, y: -0.5 },
+        colour: glm::Vec3 { x: 1.0, y: 0.0, z: 0.0, }
+    },
+    VertexData { 
+        position: glm::Vec2 { x: 0.5, y: 0.5 },
+        colour: glm::Vec3 { x: 0.0, y: 1.0, z: 0.0, }
+    },
+    VertexData {
+        position: glm::Vec2 { x: -0.5, y: 0.5 },
+        colour: glm::Vec3 { x: 0.0, y: 0.0, z: 1.0, }
+    },
+];
+
+impl VertexData {
+    pub fn get_binding_description() -> ash::vk::VertexInputBindingDescription {
+        ash::vk::VertexInputBindingDescription::default()
+            .binding(0)
+            .stride(size_of::<VertexData>() as u32)
+            .input_rate(ash::vk::VertexInputRate::VERTEX)
+    }
+    pub fn get_attribute_descriptions() -> [ash::vk::VertexInputAttributeDescription; 2] {
+        [
+            ash::vk::VertexInputAttributeDescription::default()
+                .binding(0)
+                .location(0)
+                .format(ash::vk::Format::R32G32_SFLOAT)
+                .offset(offset_of!(VertexData, position) as u32),
+            ash::vk::VertexInputAttributeDescription::default()
+                .binding(0)
+                .location(1)
+                .format(ash::vk::Format::R32G32B32_SFLOAT)
+                .offset(offset_of!(VertexData, colour) as u32),
+        ]
+    }
 }
 
 impl VulkanApp {
@@ -167,6 +213,9 @@ impl VulkanApp {
             surface,
         )?;
 
+        let (vertex_buffer, vertex_buffer_memory) =
+            Self::create_vertex_buffer(&instance, &device, physical_device)?;
+
         let command_buffers = Self::create_command_buffers(&device, command_pool)?;
 
         let (image_available_semaphores, render_finished_semaphores, in_flight_fences) =
@@ -195,6 +244,8 @@ impl VulkanApp {
             pipeline_layout,
             graphics_pipeline,
             command_pool,
+            vertex_buffer,
+            vertex_buffer_memory,
             command_buffers,
             image_available_semaphores,
             render_finished_semaphores,
@@ -797,9 +848,12 @@ impl VulkanApp {
 
         let shader_stages = [vert_shader_stage_info, frag_shader_stage_info];
 
+        let binding_descriptions = &[VertexData::get_binding_description()];
+        let attribute_descriptions = VertexData::get_attribute_descriptions();
+
         let vertex_input_info = ash::vk::PipelineVertexInputStateCreateInfo::default()
-            .vertex_binding_descriptions(&[])
-            .vertex_attribute_descriptions(&[]);
+            .vertex_binding_descriptions(binding_descriptions)
+            .vertex_attribute_descriptions(&attribute_descriptions);
         let input_assembly = ash::vk::PipelineInputAssemblyStateCreateInfo::default()
             .topology(ash::vk::PrimitiveTopology::TRIANGLE_LIST)
             .primitive_restart_enable(false);
@@ -907,6 +961,49 @@ impl VulkanApp {
         let command_pool = unsafe { device.create_command_pool(&pool_info, None)? };
         Ok(command_pool)
     }
+    fn create_vertex_buffer(
+        instance: &ash::Instance,
+        device: &ash::Device,
+        physical_device: ash::vk::PhysicalDevice,
+    ) -> Result<(ash::vk::Buffer, ash::vk::DeviceMemory)> {
+        let buffer_info = ash::vk::BufferCreateInfo::default()
+            .size(size_of_val(&VERTICES) as ash::vk::DeviceSize)
+            .usage(ash::vk::BufferUsageFlags::VERTEX_BUFFER)
+            .sharing_mode(ash::vk::SharingMode::EXCLUSIVE);
+
+        let buffer = unsafe { device.create_buffer(&buffer_info, None) }?;
+
+        let memory_requirements = unsafe { device.get_buffer_memory_requirements(buffer) };
+        let alloc_info = ash::vk::MemoryAllocateInfo::default()
+            .allocation_size(memory_requirements.size)
+            .memory_type_index(Self::find_memory_type(
+                instance,
+                physical_device,
+                memory_requirements.memory_type_bits,
+                ash::vk::MemoryPropertyFlags::HOST_VISIBLE
+                    | ash::vk::MemoryPropertyFlags::HOST_COHERENT,
+            )?);
+
+        let vertex_buffer_memory = unsafe { device.allocate_memory(&alloc_info, None) }?;
+
+        unsafe { device.bind_buffer_memory(buffer, vertex_buffer_memory, 0) }?;
+
+        unsafe {
+            let data = device.map_memory(
+                vertex_buffer_memory,
+                0,
+                buffer_info.size,
+                ash::vk::MemoryMapFlags::empty(),
+            )?;
+            // Alignment turns out to be ok, but left this as-is just to be safe
+            //  - data will have alignment of `VkPhysicalDeviceLimits::minMemoryMapAlignment` (= 4096 on my system)
+            //  - VERTICES has alignment 4, which is a factor of 4096, thus will be fine
+            core::ptr::write_unaligned(data as _, VERTICES);
+            device.unmap_memory(vertex_buffer_memory);
+        };
+
+        Ok((buffer, vertex_buffer_memory))
+    }
     fn create_command_buffers(
         device: &ash::Device,
         command_pool: ash::vk::CommandPool,
@@ -991,6 +1088,15 @@ impl VulkanApp {
                 self.vulkan.graphics_pipeline,
             );
 
+            let vertex_buffers = [self.vulkan.vertex_buffer];
+            let offsets = [0 as ash::vk::DeviceSize];
+            self.vulkan.device.cmd_bind_vertex_buffers(
+                command_buffer,
+                0,
+                &vertex_buffers,
+                &offsets,
+            );
+
             let viewport = ash::vk::Viewport::default()
                 .x(0.0)
                 .y(0.0)
@@ -1009,7 +1115,9 @@ impl VulkanApp {
                 .device
                 .cmd_set_scissor(command_buffer, 0, &[scissor]);
 
-            self.vulkan.device.cmd_draw(command_buffer, 3, 1, 0, 0);
+            self.vulkan
+                .device
+                .cmd_draw(command_buffer, VERTICES.len() as u32, 1, 0, 0);
 
             self.vulkan.device.cmd_end_render_pass(command_buffer);
         }
@@ -1158,6 +1266,23 @@ impl VulkanApp {
 
         Ok(())
     }
+    fn find_memory_type(
+        instance: &ash::Instance,
+        physical_device: ash::vk::PhysicalDevice,
+        type_filter: u32,
+        properties: ash::vk::MemoryPropertyFlags,
+    ) -> Result<u32> {
+        let mem_properties =
+            unsafe { instance.get_physical_device_memory_properties(physical_device) };
+
+        for (i, &memory_type) in mem_properties.memory_types_as_slice().iter().enumerate() {
+            if type_filter & (1 << i) != 0 && memory_type.property_flags.contains(properties) {
+                return Ok(i as u32);
+            }
+        }
+
+        Err(err("Failed to find memory type").into())
+    }
 }
 #[derive(Debug)]
 struct QueueFamilyIndices {
@@ -1245,6 +1370,11 @@ impl VulkanData {
                 self.swapchain,
             )
         };
+
+        unsafe {
+            self.device.destroy_buffer(self.vertex_buffer, None);
+            self.device.free_memory(self.vertex_buffer_memory, None);
+        }
 
         unsafe {
             self.device.destroy_device(None);
