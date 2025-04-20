@@ -62,23 +62,23 @@ struct VulkanData {
 }
 
 struct VertexData {
-    pub position: glm::Vec2,
-    pub colour: glm::Vec3,
+    pub position: glam::Vec2,
+    pub colour: glam::Vec3,
 }
 
-#[rustfmt::skip]
+#[rustfmt::skip] // This doesn't need to get shoved onto so many lines
 const VERTICES: [VertexData; 3] = [
     VertexData { 
-        position: glm::Vec2 { x: 0.0, y: -0.5 },
-        colour: glm::Vec3 { x: 1.0, y: 0.0, z: 0.0, }
+        position: glam::Vec2 { x: 0.0, y: -0.5 },
+        colour: glam::Vec3 { x: 1.0, y: 0.0, z: 0.0 },
     },
     VertexData { 
-        position: glm::Vec2 { x: 0.5, y: 0.5 },
-        colour: glm::Vec3 { x: 0.0, y: 1.0, z: 0.0, }
+        position: glam::Vec2 { x: 0.5, y: 0.5 },
+        colour: glam::Vec3 { x: 0.0, y: 1.0, z: 0.0 },
     },
     VertexData {
-        position: glm::Vec2 { x: -0.5, y: 0.5 },
-        colour: glm::Vec3 { x: 0.0, y: 0.0, z: 1.0, }
+        position: glam::Vec2 { x: -0.5, y: 0.5 },
+        colour: glam::Vec3 { x: 0.0, y: 0.0, z: 1.0 },
     },
 ];
 
