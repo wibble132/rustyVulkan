@@ -3,7 +3,7 @@ use glfw::{ClientApiHint, Glfw, PWindow, WindowHint, WindowMode};
 use std::collections::BTreeSet;
 use std::fmt::Debug;
 use std::mem::{offset_of, MaybeUninit};
-use std::ptr::{addr_of, null};
+use std::ptr::null;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -61,6 +61,8 @@ struct VulkanData {
     pub command_pool: ash::vk::CommandPool,
     pub vertex_buffer: ash::vk::Buffer,
     pub vertex_buffer_memory: ash::vk::DeviceMemory,
+    pub index_buffer: ash::vk::Buffer,
+    pub index_buffer_memory: ash::vk::DeviceMemory,
     pub command_buffers: Vec<ash::vk::CommandBuffer>,
 
     pub image_available_semaphores: Vec<ash::vk::Semaphore>,
@@ -74,20 +76,26 @@ struct VertexData {
 }
 
 #[rustfmt::skip] // This doesn't need to get shoved onto so many lines
-const VERTICES: [VertexData; 3] = [
+const VERTICES: [VertexData; 4] = [
     VertexData { 
-        position: glam::Vec2 { x: 0.0, y: -0.5 },
+        position: glam::Vec2 { x: -0.5, y: -0.5 },
         colour: glam::Vec3 { x: 1.0, y: 0.0, z: 0.0 },
     },
     VertexData { 
-        position: glam::Vec2 { x: 0.5, y: 0.5 },
+        position: glam::Vec2 { x: 0.5, y: -0.5 },
         colour: glam::Vec3 { x: 0.0, y: 1.0, z: 0.0 },
     },
     VertexData {
-        position: glam::Vec2 { x: -0.5, y: 0.5 },
+        position: glam::Vec2 { x: 0.5, y: 0.5 },
         colour: glam::Vec3 { x: 0.0, y: 0.0, z: 1.0 },
     },
+    VertexData {
+        position: glam::Vec2 { x: -0.5, y: 0.5 },
+        colour: glam::Vec3 { x: 1.0, y: 1.0, z: 1.0 },
+    },
 ];
+
+const INDICES: [u16; 6] = [0, 1, 2, 2, 3, 0];
 
 impl VertexData {
     pub fn get_binding_description() -> ash::vk::VertexInputBindingDescription {
@@ -228,6 +236,14 @@ impl VulkanApp {
             physical_device,
         )?;
 
+        let (index_buffer, index_buffer_memory) = Self::create_index_buffer(
+            &instance,
+            &device,
+            command_pool,
+            graphics_queue,
+            physical_device,
+        )?;
+
         let command_buffers = Self::create_command_buffers(&device, command_pool)?;
 
         let (image_available_semaphores, render_finished_semaphores, in_flight_fences) =
@@ -258,6 +274,8 @@ impl VulkanApp {
             command_pool,
             vertex_buffer,
             vertex_buffer_memory,
+            index_buffer,
+            index_buffer_memory,
             command_buffers,
             image_available_semaphores,
             render_finished_semaphores,
@@ -1119,6 +1137,61 @@ impl VulkanApp {
 
         Ok((vertex_buffer, vertex_buffer_memory))
     }
+    fn create_index_buffer(
+        instance: &ash::Instance,
+        device: &ash::Device,
+        command_pool: ash::vk::CommandPool,
+        graphics_queue: ash::vk::Queue,
+        physical_device: ash::vk::PhysicalDevice,
+    ) -> Result<(ash::vk::Buffer, ash::vk::DeviceMemory)> {
+        let buffer_size = size_of_val(&INDICES) as ash::vk::DeviceSize;
+
+        let (staging_buffer, staging_buffer_memory) = Self::create_buffer(
+            instance,
+            device,
+            buffer_size,
+            physical_device,
+            ash::vk::BufferUsageFlags::TRANSFER_SRC,
+            ash::vk::MemoryPropertyFlags::HOST_VISIBLE
+                | ash::vk::MemoryPropertyFlags::HOST_COHERENT,
+        )?;
+
+        unsafe {
+            let data = device.map_memory(
+                staging_buffer_memory,
+                0,
+                buffer_size,
+                ash::vk::MemoryMapFlags::empty(),
+            )?;
+            core::ptr::write_unaligned(data as _, INDICES);
+            device.unmap_memory(staging_buffer_memory);
+        };
+
+        let (index_buffer, index_buffer_memory) = Self::create_buffer(
+            instance,
+            device,
+            buffer_size,
+            physical_device,
+            ash::vk::BufferUsageFlags::TRANSFER_DST | ash::vk::BufferUsageFlags::INDEX_BUFFER,
+            ash::vk::MemoryPropertyFlags::DEVICE_LOCAL,
+        )?;
+
+        Self::copy_buffer(
+            device,
+            command_pool,
+            graphics_queue,
+            staging_buffer,
+            index_buffer,
+            buffer_size,
+        )?;
+
+        unsafe {
+            device.destroy_buffer(staging_buffer, None);
+            device.free_memory(staging_buffer_memory, None);
+        }
+
+        Ok((index_buffer, index_buffer_memory))
+    }
     fn create_command_buffers(
         device: &ash::Device,
         command_pool: ash::vk::CommandPool,
@@ -1211,6 +1284,12 @@ impl VulkanApp {
                 &vertex_buffers,
                 &offsets,
             );
+            self.vulkan.device.cmd_bind_index_buffer(
+                command_buffer,
+                self.vulkan.index_buffer,
+                0,
+                ash::vk::IndexType::UINT16,
+            );
 
             let viewport = ash::vk::Viewport::default()
                 .x(0.0)
@@ -1232,7 +1311,7 @@ impl VulkanApp {
 
             self.vulkan
                 .device
-                .cmd_draw(command_buffer, VERTICES.len() as u32, 1, 0, 0);
+                .cmd_draw_indexed(command_buffer, INDICES.len() as u32, 1, 0, 0, 0);
 
             self.vulkan.device.cmd_end_render_pass(command_buffer);
         }
@@ -1487,6 +1566,8 @@ impl VulkanData {
         };
 
         unsafe {
+            self.device.destroy_buffer(self.index_buffer, None);
+            self.device.free_memory(self.index_buffer_memory, None);
             self.device.destroy_buffer(self.vertex_buffer, None);
             self.device.free_memory(self.vertex_buffer_memory, None);
         }
