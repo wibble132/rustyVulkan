@@ -1,17 +1,24 @@
 use crate::result::{err, error, Result};
 use glfw::{ClientApiHint, Glfw, PWindow, WindowHint, WindowMode};
 use std::collections::BTreeSet;
-use std::ffi;
+use std::fmt::Debug;
 use std::mem::{offset_of, MaybeUninit};
-use std::ptr::null;
+use std::ptr::{addr_of, null};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use std::{ffi, slice};
 
 const VALIDATION_LAYERS: &[*const ffi::c_char] = &[c"VK_LAYER_KHRONOS_validation".as_ptr()];
 const ENABLE_VALIDATION: bool = cfg!(any(debug_assertions, not(debug_assertions)));
 static DEVICE_EXTENSIONS: &[&ffi::CStr] = &[ash::vk::KHR_SWAPCHAIN_NAME];
 const MAX_FRAMES_IN_FLIGHT: u32 = 2;
+
+type DebugCallback = fn(
+    ash::vk::DebugUtilsMessageSeverityFlagsEXT,
+    ash::vk::DebugUtilsMessageTypeFlagsEXT,
+    ash::vk::DebugUtilsMessengerCallbackDataEXT<'_>,
+);
 
 pub(crate) struct VulkanApp {
     glfw: Glfw,
@@ -213,8 +220,13 @@ impl VulkanApp {
             surface,
         )?;
 
-        let (vertex_buffer, vertex_buffer_memory) =
-            Self::create_vertex_buffer(&instance, &device, physical_device)?;
+        let (vertex_buffer, vertex_buffer_memory) = Self::create_vertex_buffer(
+            &instance,
+            &device,
+            command_pool,
+            graphics_queue,
+            physical_device,
+        )?;
 
         let command_buffers = Self::create_command_buffers(&device, command_pool)?;
 
@@ -378,7 +390,14 @@ impl VulkanApp {
         res
     }
     fn get_create_debug_info<'a>() -> ash::vk::DebugUtilsMessengerCreateInfoEXT<'a> {
-        ash::vk::DebugUtilsMessengerCreateInfoEXT::default()
+        let callback: Box<DebugCallback> = Box::new(|message_severity, message_type, data| {
+            let message = unsafe { data.message_as_c_str() }
+                .and_then(|x| x.to_str().ok())
+                .unwrap_or_default();
+            println!("{message_severity:?}-{message_type:?}: {message}");
+        });
+
+        let info = ash::vk::DebugUtilsMessengerCreateInfoEXT::default()
             .message_severity(
                 ash::vk::DebugUtilsMessageSeverityFlagsEXT::WARNING
                     | ash::vk::DebugUtilsMessageSeverityFlagsEXT::VERBOSE
@@ -390,7 +409,10 @@ impl VulkanApp {
                     | ash::vk::DebugUtilsMessageTypeFlagsEXT::PERFORMANCE
                     | ash::vk::DebugUtilsMessageTypeFlagsEXT::VALIDATION,
             )
-            .pfn_user_callback(Some(debug_callback))
+            .user_data(Box::into_raw(callback) as _)
+            .pfn_user_callback(Some(debug_callback));
+
+        info
     }
     fn create_debug_callback(
         debug_utils_instance: &ash::ext::debug_utils::Instance,
@@ -961,48 +983,141 @@ impl VulkanApp {
         let command_pool = unsafe { device.create_command_pool(&pool_info, None)? };
         Ok(command_pool)
     }
-    fn create_vertex_buffer(
+    fn create_buffer(
         instance: &ash::Instance,
         device: &ash::Device,
+        size: ash::vk::DeviceSize,
         physical_device: ash::vk::PhysicalDevice,
+        usage: ash::vk::BufferUsageFlags,
+        properties: ash::vk::MemoryPropertyFlags,
     ) -> Result<(ash::vk::Buffer, ash::vk::DeviceMemory)> {
         let buffer_info = ash::vk::BufferCreateInfo::default()
-            .size(size_of_val(&VERTICES) as ash::vk::DeviceSize)
-            .usage(ash::vk::BufferUsageFlags::VERTEX_BUFFER)
+            .size(size)
+            .usage(usage)
             .sharing_mode(ash::vk::SharingMode::EXCLUSIVE);
 
         let buffer = unsafe { device.create_buffer(&buffer_info, None) }?;
-
         let memory_requirements = unsafe { device.get_buffer_memory_requirements(buffer) };
+        let memory_type_index = Self::find_memory_type(
+            instance,
+            physical_device,
+            memory_requirements.memory_type_bits,
+            properties,
+        )?;
         let alloc_info = ash::vk::MemoryAllocateInfo::default()
             .allocation_size(memory_requirements.size)
-            .memory_type_index(Self::find_memory_type(
-                instance,
-                physical_device,
-                memory_requirements.memory_type_bits,
-                ash::vk::MemoryPropertyFlags::HOST_VISIBLE
-                    | ash::vk::MemoryPropertyFlags::HOST_COHERENT,
-            )?);
+            .memory_type_index(memory_type_index);
 
-        let vertex_buffer_memory = unsafe { device.allocate_memory(&alloc_info, None) }?;
+        let buffer_memory = unsafe { device.allocate_memory(&alloc_info, None) }?;
 
-        unsafe { device.bind_buffer_memory(buffer, vertex_buffer_memory, 0) }?;
+        unsafe { device.bind_buffer_memory(buffer, buffer_memory, 0) }?;
+
+        Ok((buffer, buffer_memory))
+    }
+    fn copy_buffer(
+        device: &ash::Device,
+        command_pool: ash::vk::CommandPool,
+        graphics_queue: ash::vk::Queue,
+        src: ash::vk::Buffer,
+        dst: ash::vk::Buffer,
+        size: ash::vk::DeviceSize,
+    ) -> Result<()> {
+        let alloc_info = ash::vk::CommandBufferAllocateInfo::default()
+            .level(ash::vk::CommandBufferLevel::PRIMARY)
+            .command_pool(command_pool)
+            .command_buffer_count(1);
+
+        let command_buffer = unsafe { device.allocate_command_buffers(&alloc_info) }?
+            .into_iter()
+            .next()
+            .expect("allocate_info.command_buffer_count is 1");
+
+        let begin_info = ash::vk::CommandBufferBeginInfo::default()
+            .flags(ash::vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
+
+        unsafe {
+            device.begin_command_buffer(command_buffer, &begin_info)?;
+
+            let copy_region = ash::vk::BufferCopy::default()
+                .src_offset(0)
+                .dst_offset(0)
+                .size(size);
+
+            device.cmd_copy_buffer(command_buffer, src, dst, slice::from_ref(&copy_region));
+
+            device.end_command_buffer(command_buffer)?;
+
+            let submit_info =
+                ash::vk::SubmitInfo::default().command_buffers(slice::from_ref(&command_buffer));
+            device.queue_submit(
+                graphics_queue,
+                slice::from_ref(&submit_info),
+                ash::vk::Fence::null(),
+            )?;
+            device.queue_wait_idle(graphics_queue)?;
+            device.free_command_buffers(command_pool, slice::from_ref(&command_buffer));
+        }
+
+        Ok(())
+    }
+
+    fn create_vertex_buffer(
+        instance: &ash::Instance,
+        device: &ash::Device,
+        command_pool: ash::vk::CommandPool,
+        graphics_queue: ash::vk::Queue,
+        physical_device: ash::vk::PhysicalDevice,
+    ) -> Result<(ash::vk::Buffer, ash::vk::DeviceMemory)> {
+        let buffer_size = size_of_val(&VERTICES) as ash::vk::DeviceSize;
+
+        let (staging_buffer, staging_buffer_memory) = Self::create_buffer(
+            instance,
+            device,
+            buffer_size,
+            physical_device,
+            ash::vk::BufferUsageFlags::TRANSFER_SRC,
+            ash::vk::MemoryPropertyFlags::HOST_VISIBLE
+                | ash::vk::MemoryPropertyFlags::HOST_COHERENT,
+        )?;
 
         unsafe {
             let data = device.map_memory(
-                vertex_buffer_memory,
+                staging_buffer_memory,
                 0,
-                buffer_info.size,
+                buffer_size,
                 ash::vk::MemoryMapFlags::empty(),
             )?;
             // Alignment turns out to be ok, but left this as-is just to be safe
             //  - data will have alignment of `VkPhysicalDeviceLimits::minMemoryMapAlignment` (= 4096 on my system)
             //  - VERTICES has alignment 4, which is a factor of 4096, thus will be fine
             core::ptr::write_unaligned(data as _, VERTICES);
-            device.unmap_memory(vertex_buffer_memory);
+            device.unmap_memory(staging_buffer_memory);
         };
 
-        Ok((buffer, vertex_buffer_memory))
+        let (vertex_buffer, vertex_buffer_memory) = Self::create_buffer(
+            instance,
+            device,
+            buffer_size,
+            physical_device,
+            ash::vk::BufferUsageFlags::TRANSFER_DST | ash::vk::BufferUsageFlags::VERTEX_BUFFER,
+            ash::vk::MemoryPropertyFlags::DEVICE_LOCAL,
+        )?;
+
+        Self::copy_buffer(
+            device,
+            command_pool,
+            graphics_queue,
+            staging_buffer,
+            vertex_buffer,
+            buffer_size,
+        )?;
+
+        unsafe {
+            device.destroy_buffer(staging_buffer, None);
+            device.free_memory(staging_buffer_memory, None);
+        }
+
+        Ok((vertex_buffer, vertex_buffer_memory))
     }
     fn create_command_buffers(
         device: &ash::Device,
@@ -1306,11 +1421,11 @@ unsafe extern "system" fn debug_callback(
     message_severity: ash::vk::DebugUtilsMessageSeverityFlagsEXT,
     message_types: ash::vk::DebugUtilsMessageTypeFlagsEXT,
     p_callback_data: *const ash::vk::DebugUtilsMessengerCallbackDataEXT<'_>,
-    _p_user_data: *mut ffi::c_void,
+    p_user_data: *mut ffi::c_void,
 ) -> ash::vk::Bool32 {
-    let message = unsafe { ffi::CStr::from_ptr((*p_callback_data).p_message) };
-    let message = message.to_str().unwrap();
-    println!("{message_severity:?}-{message_types:?}: {message}");
+    let callback_data = p_callback_data.read();
+    let callback = (p_user_data as *mut DebugCallback).read();
+    callback(message_severity, message_types, callback_data);
 
     ash::vk::FALSE
 }

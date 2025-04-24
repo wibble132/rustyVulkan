@@ -1,42 +1,39 @@
-{
-  pkgs ? (import <nixpkgs> {}),
-  stdenv ? pkgs.clang13Stdenv
-}:
-stdenv.mkDerivation {
-  name = "vkTriangleRust";
-
-  buildInputs = with pkgs; [
-    # put packages here.
-    vulkan-tools
-    vulkan-headers
-    spirv-tools
+let
+  rust_overlay = import (builtins.fetchTarball "https://github.com/oxalica/rust-overlay/archive/master.tar.gz");
+  pkgs = import <nixpkgs> { overlays = [ rust_overlay ]; };
+  rust-version = "2024-11-22";
+  rust = pkgs.rust-bin.nightly.${rust-version}.default.override {
+    extensions = [
+      "rust-src"
+      "rustc-dev"
+      "llvm-tools"
+    ];
+  };
+in
+pkgs.mkShell {
+  buildInputs = [
+    rust
+  ] ++ (with pkgs; [
+    llvmPackages_13.libclang
     vulkan-loader
     vulkan-validation-layers
-    glfw
 
-    xorg.libX11
-    xorg.libXi
-    xorg.libXxf86vm
-    xorg.libXrandr
-    xorg.libXinerama
-    xorg.libXcursor
-
-    extra-cmake-modules
-    wayland-protocols
-    wayland
-    wayland-scanner
-    libxkbcommon
-
+    # Needed for glfw package
     cmake
-    tinyobjloader
-    stb
+    extra-cmake-modules
+    libxkbcommon
+    wayland
+    wayland-protocols
+    wayland-scanner
+  ]);
 
-  ];
+  RUST_BACKTRACE = 1;
 
-  GLFW_PATH="${pkgs.glfw}";
-  STB_PATH="${pkgs.stb}";
-  VULKAN_SDK = "${pkgs.vulkan-headers}";
   LIBCLANG_PATH = "${pkgs.llvmPackages_13.libclang.lib}/lib";
-  LD_LIBRARY_PATH="${pkgs.wayland}/lib:${pkgs.libxkbcommon}/lib:${pkgs.glfw}/lib:${pkgs.vulkan-loader}/lib";
+  LD_LIBRARY_PATH="${with pkgs; lib.makeLibraryPath [
+    wayland
+    libxkbcommon
+    vulkan-loader]
+  }";
 }
 
