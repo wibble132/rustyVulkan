@@ -8,6 +8,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use std::{ffi, slice};
+use shared::VertexData;
 
 const VALIDATION_LAYERS: &[*const ffi::c_char] = &[c"VK_LAYER_KHRONOS_validation".as_ptr()];
 const ENABLE_VALIDATION: bool = cfg!(any(debug_assertions, not(debug_assertions)));
@@ -70,10 +71,6 @@ struct VulkanData {
     pub in_flight_fences: Vec<ash::vk::Fence>,
 }
 
-struct VertexData {
-    pub position: glam::Vec2,
-    pub colour: glam::Vec3,
-}
 
 #[rustfmt::skip] // This doesn't need to get shoved onto so many lines
 const VERTICES: [VertexData; 4] = [
@@ -97,14 +94,19 @@ const VERTICES: [VertexData; 4] = [
 
 const INDICES: [u16; 6] = [0, 1, 2, 2, 3, 0];
 
-impl VertexData {
-    pub fn get_binding_description() -> ash::vk::VertexInputBindingDescription {
+trait VertexInputData {
+    fn get_binding_description() -> ash::vk::VertexInputBindingDescription;
+    fn get_attribute_descriptions() -> [ash::vk::VertexInputAttributeDescription;2];
+}
+
+impl VertexInputData for VertexData {
+    fn get_binding_description() -> ash::vk::VertexInputBindingDescription {
         ash::vk::VertexInputBindingDescription::default()
             .binding(0)
             .stride(size_of::<VertexData>() as u32)
             .input_rate(ash::vk::VertexInputRate::VERTEX)
     }
-    pub fn get_attribute_descriptions() -> [ash::vk::VertexInputAttributeDescription; 2] {
+    fn get_attribute_descriptions() -> [ash::vk::VertexInputAttributeDescription; 2] {
         [
             ash::vk::VertexInputAttributeDescription::default()
                 .binding(0)

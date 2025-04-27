@@ -239,9 +239,9 @@ dependencies = [
 
 [[package]]
 name = "glam"
-version = "0.24.2"
+version = "0.30.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b5418c17512bdf42730f9032c74e1ae39afc408745ebb2acf72fbc4691c17945"
+checksum = "d0e9b6647e9b41d3a5ef02964c6be01311a7f2472fea40595c635c6d046c259e"
 dependencies = [
  "libm",
 ]
@@ -588,7 +588,7 @@ checksum = "08d43f7aa6b08d49f382cde6a7982047c3426db949b1424bc4b7ec9ae12c6ce2"
 [[package]]
 name = "rustc_codegen_spirv"
 version = "0.9.0"
-source = "git+https://github.com/rust-gpu/rust-gpu?rev=175c175cd8a25722f284010fd9c7b70725449956#175c175cd8a25722f284010fd9c7b70725449956"
+source = "git+https://github.com/rust-gpu/rust-gpu?rev=6bbbfe460e45b7ca09b1a91fa6f6be7be2669bef#6bbbfe460e45b7ca09b1a91fa6f6be7be2669bef"
 dependencies = [
  "ahash",
  "ar",
@@ -618,7 +618,7 @@ dependencies = [
 [[package]]
 name = "rustc_codegen_spirv-types"
 version = "0.9.0"
-source = "git+https://github.com/rust-gpu/rust-gpu?rev=175c175cd8a25722f284010fd9c7b70725449956#175c175cd8a25722f284010fd9c7b70725449956"
+source = "git+https://github.com/rust-gpu/rust-gpu?rev=6bbbfe460e45b7ca09b1a91fa6f6be7be2669bef#6bbbfe460e45b7ca09b1a91fa6f6be7be2669bef"
 dependencies = [
  "rspirv",
  "serde",
@@ -716,6 +716,7 @@ dependencies = [
 name = "shaders"
 version = "0.1.0"
 dependencies = [
+ "shared",
  "spirv-std",
 ]
 
@@ -726,6 +727,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f40ca3c46823713e0d4209592e8d6e826aa57e928f09752619fc696c499637f6"
 dependencies = [
  "lazy_static",
+]
+
+[[package]]
+name = "shared"
+version = "0.1.0"
+dependencies = [
+ "glam",
+ "spirv-std",
 ]
 
 [[package]]
@@ -776,7 +785,7 @@ dependencies = [
 [[package]]
 name = "spirv-builder"
 version = "0.9.0"
-source = "git+https://github.com/rust-gpu/rust-gpu?rev=175c175cd8a25722f284010fd9c7b70725449956#175c175cd8a25722f284010fd9c7b70725449956"
+source = "git+https://github.com/rust-gpu/rust-gpu?rev=6bbbfe460e45b7ca09b1a91fa6f6be7be2669bef#6bbbfe460e45b7ca09b1a91fa6f6be7be2669bef"
 dependencies = [
  "memchr",
  "raw-string",
@@ -789,7 +798,7 @@ dependencies = [
 [[package]]
 name = "spirv-std"
 version = "0.9.0"
-source = "git+https://github.com/rust-gpu/rust-gpu?rev=175c175cd8a25722f284010fd9c7b70725449956#175c175cd8a25722f284010fd9c7b70725449956"
+source = "git+https://github.com/rust-gpu/rust-gpu?rev=6bbbfe460e45b7ca09b1a91fa6f6be7be2669bef#6bbbfe460e45b7ca09b1a91fa6f6be7be2669bef"
 dependencies = [
  "bitflags 1.3.2",
  "glam",
@@ -801,7 +810,7 @@ dependencies = [
 [[package]]
 name = "spirv-std-macros"
 version = "0.9.0"
-source = "git+https://github.com/rust-gpu/rust-gpu?rev=175c175cd8a25722f284010fd9c7b70725449956#175c175cd8a25722f284010fd9c7b70725449956"
+source = "git+https://github.com/rust-gpu/rust-gpu?rev=6bbbfe460e45b7ca09b1a91fa6f6be7be2669bef#6bbbfe460e45b7ca09b1a91fa6f6be7be2669bef"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -812,22 +821,22 @@ dependencies = [
 [[package]]
 name = "spirv-std-types"
 version = "0.9.0"
-source = "git+https://github.com/rust-gpu/rust-gpu?rev=175c175cd8a25722f284010fd9c7b70725449956#175c175cd8a25722f284010fd9c7b70725449956"
+source = "git+https://github.com/rust-gpu/rust-gpu?rev=6bbbfe460e45b7ca09b1a91fa6f6be7be2669bef#6bbbfe460e45b7ca09b1a91fa6f6be7be2669bef"
 
 [[package]]
 name = "spirv-tools"
-version = "0.10.0"
+version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bcb3b0832881834994b7ec82b709ec5491043ceb4bf8101e27da6b5234b24261"
+checksum = "191e2df260dbaa79c5c334fb9e7b2d5372300d765f5b950c2b54f89d412db5e7"
 dependencies = [
  "spirv-tools-sys",
 ]
 
 [[package]]
 name = "spirv-tools-sys"
-version = "0.8.0"
+version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "48e68b55a97aa6856e010a6f2477425875a97873e147bb0232160e73c45bdae7"
+checksum = "ed89e04a14352154c6aca979f603bf8b59e16dafcf5e6c5f06e786b76c7daaf3"
 dependencies = [
  "cc",
 ]
@@ -998,6 +1007,7 @@ dependencies = [
  "ash",
  "glam",
  "glfw",
+ "shared",
  "spirv-builder",
 ]
 
