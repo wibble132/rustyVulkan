@@ -1,14 +1,15 @@
 use crate::result::{err, error, Result};
 use glfw::{ClientApiHint, Glfw, PWindow, WindowHint, WindowMode};
+use shared::{UniformBufferObject, VertexData};
 use std::collections::BTreeSet;
+use std::f32::consts::PI;
 use std::fmt::Debug;
 use std::mem::{offset_of, MaybeUninit};
 use std::ptr::null;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
-use std::{ffi, slice};
-use shared::VertexData;
+use std::{ffi, ptr, slice};
 
 const VALIDATION_LAYERS: &[*const ffi::c_char] = &[c"VK_LAYER_KHRONOS_validation".as_ptr()];
 const ENABLE_VALIDATION: bool = cfg!(any(debug_assertions, not(debug_assertions)));
@@ -57,6 +58,7 @@ struct VulkanData {
 
     pub shader_module: ash::vk::ShaderModule,
     pub render_pass: ash::vk::RenderPass,
+    pub descriptor_set_layout: ash::vk::DescriptorSetLayout,
     pub pipeline_layout: ash::vk::PipelineLayout,
     pub graphics_pipeline: ash::vk::Pipeline,
     pub command_pool: ash::vk::CommandPool,
@@ -64,6 +66,11 @@ struct VulkanData {
     pub vertex_buffer_memory: ash::vk::DeviceMemory,
     pub index_buffer: ash::vk::Buffer,
     pub index_buffer_memory: ash::vk::DeviceMemory,
+    pub uniform_buffers: Vec<ash::vk::Buffer>,
+    pub uniform_buffers_memory: Vec<ash::vk::DeviceMemory>,
+    pub uniform_buffers_mapped: Vec<*mut ffi::c_void>,
+    pub descriptor_pool: ash::vk::DescriptorPool,
+    pub descriptor_sets: Vec<ash::vk::DescriptorSet>,
     pub command_buffers: Vec<ash::vk::CommandBuffer>,
 
     pub image_available_semaphores: Vec<ash::vk::Semaphore>,
@@ -71,14 +78,13 @@ struct VulkanData {
     pub in_flight_fences: Vec<ash::vk::Fence>,
 }
 
-
 #[rustfmt::skip] // This doesn't need to get shoved onto so many lines
 const VERTICES: [VertexData; 4] = [
-    VertexData { 
+    VertexData {
         position: glam::Vec2 { x: -0.5, y: -0.5 },
         colour: glam::Vec3 { x: 1.0, y: 0.0, z: 0.0 },
     },
-    VertexData { 
+    VertexData {
         position: glam::Vec2 { x: 0.5, y: -0.5 },
         colour: glam::Vec3 { x: 0.0, y: 1.0, z: 0.0 },
     },
@@ -96,7 +102,7 @@ const INDICES: [u16; 6] = [0, 1, 2, 2, 3, 0];
 
 trait VertexInputData {
     fn get_binding_description() -> ash::vk::VertexInputBindingDescription;
-    fn get_attribute_descriptions() -> [ash::vk::VertexInputAttributeDescription;2];
+    fn get_attribute_descriptions() -> [ash::vk::VertexInputAttributeDescription; 2];
 }
 
 impl VertexInputData for VertexData {
@@ -212,8 +218,10 @@ impl VulkanApp {
 
         let render_pass = Self::create_render_pass(&device, swapchain_format)?;
 
+        let descriptor_set_layout = Self::create_descriptor_set_layout(&device)?;
+
         let (shader_module, pipeline_layout, graphics_pipeline) =
-            Self::create_graphics_pipeline(&device, render_pass)?;
+            Self::create_graphics_pipeline(&device, render_pass, &descriptor_set_layout)?;
 
         let swap_chain_framebuffers = Self::create_framebuffers(
             &device,
@@ -246,6 +254,17 @@ impl VulkanApp {
             physical_device,
         )?;
 
+        let (uniform_buffers, uniform_buffers_memory, uniform_buffers_mapped) =
+            Self::create_uniform_buffers(&instance, &device, physical_device)?;
+
+        let descriptor_pool = Self::create_descriptor_pool(&device)?;
+        let descriptor_sets = Self::create_descriptor_sets(
+            &device,
+            descriptor_set_layout,
+            descriptor_pool,
+            &uniform_buffers,
+        )?;
+
         let command_buffers = Self::create_command_buffers(&device, command_pool)?;
 
         let (image_available_semaphores, render_finished_semaphores, in_flight_fences) =
@@ -271,6 +290,7 @@ impl VulkanApp {
             swap_chain_framebuffers,
             shader_module,
             render_pass,
+            descriptor_set_layout,
             pipeline_layout,
             graphics_pipeline,
             command_pool,
@@ -278,6 +298,11 @@ impl VulkanApp {
             vertex_buffer_memory,
             index_buffer,
             index_buffer_memory,
+            uniform_buffers,
+            uniform_buffers_memory,
+            uniform_buffers_mapped,
+            descriptor_pool,
+            descriptor_sets,
             command_buffers,
             image_available_semaphores,
             render_finished_semaphores,
@@ -858,6 +883,18 @@ impl VulkanApp {
         let render_pass = unsafe { device.create_render_pass(&render_pass_info, None) }?;
         Ok(render_pass)
     }
+    fn create_descriptor_set_layout(device: &ash::Device) -> Result<ash::vk::DescriptorSetLayout> {
+        let ubo_layout_binding = ash::vk::DescriptorSetLayoutBinding::default()
+            .binding(0)
+            .descriptor_type(ash::vk::DescriptorType::UNIFORM_BUFFER)
+            .descriptor_count(1)
+            .stage_flags(ash::vk::ShaderStageFlags::VERTEX);
+
+        let layout_info = ash::vk::DescriptorSetLayoutCreateInfo::default()
+            .bindings(slice::from_ref(&ubo_layout_binding));
+        let layout = unsafe { device.create_descriptor_set_layout(&layout_info, None) }?;
+        Ok(layout)
+    }
     fn create_shader_module(device: &ash::Device, code: &[u8]) -> Result<ash::vk::ShaderModule> {
         let create_info = ash::vk::ShaderModuleCreateInfo {
             code_size: code.len(),
@@ -871,6 +908,7 @@ impl VulkanApp {
     fn create_graphics_pipeline(
         device: &ash::Device,
         render_pass: ash::vk::RenderPass,
+        descriptor_set_layout: &ash::vk::DescriptorSetLayout,
     ) -> Result<(
         ash::vk::ShaderModule,
         ash::vk::PipelineLayout,
@@ -917,7 +955,7 @@ impl VulkanApp {
             .polygon_mode(ash::vk::PolygonMode::FILL)
             .line_width(1.0)
             .cull_mode(ash::vk::CullModeFlags::BACK)
-            .front_face(ash::vk::FrontFace::CLOCKWISE)
+            .front_face(ash::vk::FrontFace::COUNTER_CLOCKWISE)
             .depth_bias_enable(false);
 
         let multisampling = ash::vk::PipelineMultisampleStateCreateInfo::default()
@@ -937,7 +975,8 @@ impl VulkanApp {
             .logic_op_enable(false)
             .attachments(&colour_blend_attachments);
 
-        let pipeline_layout_info = ash::vk::PipelineLayoutCreateInfo::default();
+        let pipeline_layout_info = ash::vk::PipelineLayoutCreateInfo::default()
+            .set_layouts(slice::from_ref(descriptor_set_layout));
         let pipeline_layout =
             unsafe { device.create_pipeline_layout(&pipeline_layout_info, None) }?;
 
@@ -1194,6 +1233,89 @@ impl VulkanApp {
 
         Ok((index_buffer, index_buffer_memory))
     }
+    fn create_uniform_buffers(
+        instance: &ash::Instance,
+        device: &ash::Device,
+        physical_device: ash::vk::PhysicalDevice,
+    ) -> Result<(
+        Vec<ash::vk::Buffer>,
+        Vec<ash::vk::DeviceMemory>,
+        Vec<*mut ffi::c_void>,
+    )> {
+        let buffer_size = size_of::<UniformBufferObject>();
+
+        let mut uniform_buffers = Vec::with_capacity(buffer_size);
+        let mut uniform_buffers_memory = Vec::with_capacity(buffer_size);
+        let mut uniform_buffers_mapped = Vec::with_capacity(buffer_size);
+
+        let buffer_size = buffer_size as ash::vk::DeviceSize;
+
+        for _ in 0..buffer_size {
+            let (buffer, memory) = Self::create_buffer(
+                instance,
+                device,
+                buffer_size,
+                physical_device,
+                ash::vk::BufferUsageFlags::UNIFORM_BUFFER,
+                ash::vk::MemoryPropertyFlags::HOST_COHERENT
+                    | ash::vk::MemoryPropertyFlags::HOST_VISIBLE,
+            )?;
+
+            uniform_buffers.push(buffer);
+            uniform_buffers_memory.push(memory);
+
+            let map = unsafe {
+                device.map_memory(memory, 0, buffer_size, ash::vk::MemoryMapFlags::empty())
+            }?;
+            uniform_buffers_mapped.push(map);
+        }
+
+        Ok((
+            uniform_buffers,
+            uniform_buffers_memory,
+            uniform_buffers_mapped,
+        ))
+    }
+    fn create_descriptor_pool(device: &ash::Device) -> Result<ash::vk::DescriptorPool> {
+        let pool_size =
+            ash::vk::DescriptorPoolSize::default().descriptor_count(MAX_FRAMES_IN_FLIGHT);
+        let pool_info = ash::vk::DescriptorPoolCreateInfo::default()
+            .pool_sizes(slice::from_ref(&pool_size))
+            .max_sets(MAX_FRAMES_IN_FLIGHT);
+
+        let descriptor_pool = unsafe { device.create_descriptor_pool(&pool_info, None) }?;
+
+        Ok(descriptor_pool)
+    }
+    fn create_descriptor_sets(
+        device: &ash::Device,
+        descriptor_set_layout: ash::vk::DescriptorSetLayout,
+        descriptor_pool: ash::vk::DescriptorPool,
+        uniform_buffers: &[ash::vk::Buffer],
+    ) -> Result<Vec<ash::vk::DescriptorSet>> {
+        let layouts = [descriptor_set_layout; MAX_FRAMES_IN_FLIGHT as usize];
+        let alloc_info = ash::vk::DescriptorSetAllocateInfo::default()
+            .descriptor_pool(descriptor_pool)
+            .set_layouts(&layouts);
+
+        let descriptor_sets = unsafe { device.allocate_descriptor_sets(&alloc_info) }?;
+
+        for (&buffer, &descriptor_set) in uniform_buffers.iter().zip(&descriptor_sets) {
+            let buffer_info = ash::vk::DescriptorBufferInfo::default()
+                .buffer(buffer)
+                .offset(0)
+                .range(size_of::<UniformBufferObject>() as _);
+            let descriptor_write = ash::vk::WriteDescriptorSet::default()
+                .dst_set(descriptor_set)
+                .dst_binding(0)
+                .dst_array_element(0)
+                .descriptor_type(ash::vk::DescriptorType::UNIFORM_BUFFER)
+                .buffer_info(slice::from_ref(&buffer_info));
+            unsafe { device.update_descriptor_sets(slice::from_ref(&descriptor_write), &[]) }
+        }
+
+        Ok(descriptor_sets)
+    }
     fn create_command_buffers(
         device: &ash::Device,
         command_pool: ash::vk::CommandPool,
@@ -1311,6 +1433,15 @@ impl VulkanApp {
                 .device
                 .cmd_set_scissor(command_buffer, 0, &[scissor]);
 
+            self.vulkan.device.cmd_bind_descriptor_sets(
+                command_buffer,
+                ash::vk::PipelineBindPoint::GRAPHICS,
+                self.vulkan.pipeline_layout,
+                0,
+                slice::from_ref(&self.vulkan.descriptor_sets[self.current_frame as usize]),
+                &[],
+            );
+
             self.vulkan
                 .device
                 .cmd_draw_indexed(command_buffer, INDICES.len() as u32, 1, 0, 0, 0);
@@ -1350,6 +1481,8 @@ impl VulkanApp {
             Ok((image_index, _)) => image_index,
             Err(e) => return Err(e.into()),
         };
+
+        self.update_uniform_buffer(image_index);
 
         unsafe {
             // Only reset fences if we are submitting work
@@ -1411,6 +1544,36 @@ impl VulkanApp {
         self.current_frame = (self.current_frame + 1) % MAX_FRAMES_IN_FLIGHT;
 
         Ok(())
+    }
+    fn update_uniform_buffer(&mut self, current_image: u32) {
+        static START_TIME: LazyLock<Instant> = LazyLock::new(Instant::now);
+        LazyLock::force(&START_TIME);
+
+        let current_time = Instant::now();
+        let time = (current_time - *START_TIME).as_secs_f32();
+
+        let model = glam::Mat4::from_axis_angle(glam::Vec3::Z, time * PI / 2.0);
+        let view = glam::Mat4::look_at_rh(
+            glam::Vec3::splat(2.0),
+            glam::Vec3::splat(0.0),
+            glam::Vec3::Z,
+        );
+        let mut projection = glam::Mat4::perspective_rh(
+            PI / 4.0,
+            self.vulkan.swapchain_extent.width as f32 / self.vulkan.swapchain_extent.height as f32,
+            0.1,
+            10.0,
+        );
+        projection.y_axis.y *= -1.0;
+
+        let ubo = UniformBufferObject {
+            model,
+            view,
+            projection,
+        };
+
+        let map = self.vulkan.uniform_buffers_mapped[current_image as usize];
+        unsafe { ptr::write_unaligned(map as _, ubo) };
     }
     fn recreate_swap_chain(&mut self) -> Result<()> {
         let (mut width, mut height) = self.window.get_framebuffer_size();
@@ -1566,6 +1729,23 @@ impl VulkanData {
                 self.swapchain,
             )
         };
+
+        unsafe {
+            for (buf, mem) in self
+                .uniform_buffers
+                .into_iter()
+                .zip(self.uniform_buffers_memory)
+            {
+                self.device.destroy_buffer(buf, None);
+                self.device.free_memory(mem, None);
+            }
+
+            self.device
+                .destroy_descriptor_pool(self.descriptor_pool, None);
+
+            self.device
+                .destroy_descriptor_set_layout(self.descriptor_set_layout, None);
+        }
 
         unsafe {
             self.device.destroy_buffer(self.index_buffer, None);

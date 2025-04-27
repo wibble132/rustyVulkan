@@ -10,3 +10,10 @@ pub struct VertexData {
     pub position: glam::Vec2,
     pub colour: glam::Vec3,
 }
+
+#[repr(C)]
+pub struct UniformBufferObject {
+    pub model: glam::Mat4,
+    pub view: glam::Mat4,
+    pub projection: glam::Mat4,
+}
