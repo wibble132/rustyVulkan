@@ -11,6 +11,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
 use std::{ffi, ptr, slice};
+use std::thread::sleep;
 
 const VALIDATION_LAYERS: &[*const ffi::c_char] = &[c"VK_LAYER_KHRONOS_validation".as_ptr()];
 const ENABLE_VALIDATION: bool = cfg!(any(debug_assertions, not(debug_assertions)));
@@ -360,6 +361,8 @@ impl VulkanApp {
                 println!("This has gone on long enough!");
                 break;
             }
+            
+            sleep(Duration::from_millis(1));
         }
 
         let mean_frame_time = times.iter().sum::<Duration>() / FRAME_COUNT;
@@ -1185,7 +1188,6 @@ impl VulkanApp {
         command_pool: ash::vk::CommandPool,
         graphics_queue: ash::vk::Queue,
         image: ash::vk::Image,
-        format: ash::vk::Format,
         old_layout: ash::vk::ImageLayout,
         new_layout: ash::vk::ImageLayout,
     ) -> Result<()> {

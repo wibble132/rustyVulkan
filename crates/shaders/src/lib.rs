@@ -5,6 +5,7 @@
 use shared::{UniformBufferObject, VertexData};
 use spirv_std::glam::{Vec2, Vec3, Vec4};
 use spirv_std::{spirv, Image};
+use spirv_std::num_traits::Float;
 
 #[spirv(vertex)]
 pub fn main_vs(
@@ -27,8 +28,15 @@ pub fn main_fs(
     frag_tex_coord: Vec2,
     #[spirv(descriptor_set = 0, binding = 1)] image: &Image![2D, format = rgba8, sampled],
     #[spirv(descriptor_set = 0, binding = 1)] sampler: &spirv_std::Sampler,
+    #[spirv(frag_coord)] point_coord: Vec4,
     output: &mut Vec4,
 ) {
-    // Set output using sampler
-    *output = image.sample(*sampler, frag_tex_coord);
+    let x = point_coord.x as u32;
+    let y = point_coord.y as u32;
+    
+    if x % 6 == 1 || y % 4 == 1 && (x + 2 * y) % 5 < 2 {
+        *output = image.sample(*sampler, frag_tex_coord);
+    } else {
+        *output = frag_colour.extend(1.0);
+    }
 }
