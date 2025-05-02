@@ -15,6 +15,7 @@ spirv-builder = { git = "https://github.com/rust-gpu/rust-gpu", rev = "6bbbfe460
 #spirv-std = { path = "../rust-gpu/crates/spirv-std" }
 #spirv-builder = { path = "../rust-gpu/crates/spirv-builder" }
 glam = { version = "0.30.2" }
+image = { version = "0.25.6" }
 
 shared = { path = "crates/shared" }
 

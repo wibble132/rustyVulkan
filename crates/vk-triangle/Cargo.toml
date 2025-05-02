@@ -11,6 +11,7 @@ ash = { workspace = true }
 glfw = { workspace = true, features = ["vulkan"] }
 glam = { workspace = true }
 shared = { workspace = true }
+image = { workspace = true }
 
 [build-dependencies]
 spirv-builder = { workspace = true }

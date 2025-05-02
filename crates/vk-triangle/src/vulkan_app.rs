@@ -5,6 +5,7 @@ use std::collections::BTreeSet;
 use std::f32::consts::PI;
 use std::fmt::Debug;
 use std::mem::{offset_of, MaybeUninit};
+use std::path::Path;
 use std::ptr::null;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock};
@@ -62,6 +63,10 @@ struct VulkanData {
     pub pipeline_layout: ash::vk::PipelineLayout,
     pub graphics_pipeline: ash::vk::Pipeline,
     pub command_pool: ash::vk::CommandPool,
+    pub texture_image: ash::vk::Image,
+    pub texture_image_memory: ash::vk::DeviceMemory,
+    pub texture_image_view: ash::vk::ImageView,
+    pub texture_sampler: ash::vk::Sampler,
     pub vertex_buffer: ash::vk::Buffer,
     pub vertex_buffer_memory: ash::vk::DeviceMemory,
     pub index_buffer: ash::vk::Buffer,
@@ -83,18 +88,22 @@ const VERTICES: [VertexData; 4] = [
     VertexData {
         position: glam::Vec2 { x: -0.5, y: -0.5 },
         colour: glam::Vec3 { x: 1.0, y: 0.0, z: 0.0 },
+        tex_coord: glam::Vec2 { x: 1.0, y: 0.0 },
     },
     VertexData {
         position: glam::Vec2 { x: 0.5, y: -0.5 },
         colour: glam::Vec3 { x: 0.0, y: 1.0, z: 0.0 },
+        tex_coord: glam::Vec2 { x: 0.0, y: 0.0 },
     },
     VertexData {
         position: glam::Vec2 { x: 0.5, y: 0.5 },
         colour: glam::Vec3 { x: 0.0, y: 0.0, z: 1.0 },
+        tex_coord: glam::Vec2 { x: 0.0, y: 1.0 },
     },
     VertexData {
         position: glam::Vec2 { x: -0.5, y: 0.5 },
         colour: glam::Vec3 { x: 1.0, y: 1.0, z: 1.0 },
+        tex_coord: glam::Vec2 { x: 1.0, y: 1.0 },
     },
 ];
 
@@ -102,7 +111,7 @@ const INDICES: [u16; 6] = [0, 1, 2, 2, 3, 0];
 
 trait VertexInputData {
     fn get_binding_description() -> ash::vk::VertexInputBindingDescription;
-    fn get_attribute_descriptions() -> [ash::vk::VertexInputAttributeDescription; 2];
+    fn get_attribute_descriptions() -> [ash::vk::VertexInputAttributeDescription; 3];
 }
 
 impl VertexInputData for VertexData {
@@ -112,7 +121,7 @@ impl VertexInputData for VertexData {
             .stride(size_of::<VertexData>() as u32)
             .input_rate(ash::vk::VertexInputRate::VERTEX)
     }
-    fn get_attribute_descriptions() -> [ash::vk::VertexInputAttributeDescription; 2] {
+    fn get_attribute_descriptions() -> [ash::vk::VertexInputAttributeDescription; 3] {
         [
             ash::vk::VertexInputAttributeDescription::default()
                 .binding(0)
@@ -124,6 +133,11 @@ impl VertexInputData for VertexData {
                 .location(1)
                 .format(ash::vk::Format::R32G32B32_SFLOAT)
                 .offset(offset_of!(VertexData, colour) as u32),
+            ash::vk::VertexInputAttributeDescription::default()
+                .binding(0)
+                .location(2)
+                .format(ash::vk::Format::R32G32_SFLOAT)
+                .offset(offset_of!(VertexData, tex_coord) as u32),
         ]
     }
 }
@@ -194,7 +208,7 @@ impl VulkanApp {
         let surface = Self::create_surface(&instance, window)?;
 
         let surface_instance = ash::khr::surface::Instance::new(&entry, &instance);
-        let physical_device =
+        let (physical_device, device_properties) =
             unsafe { Self::pick_physical_device(&instance, &surface_instance, surface)? };
         // Safety: the PhysicalDevice from `pick_physical_device` satisfies `is_device_suitable`
         let (device, graphics_queue, present_queue) = unsafe {
@@ -238,6 +252,17 @@ impl VulkanApp {
             surface,
         )?;
 
+        let (texture_image, texture_image_memory) = Self::create_texture_image(
+            &instance,
+            &device,
+            physical_device,
+            command_pool,
+            graphics_queue,
+        )?;
+
+        let texture_image_view = Self::create_texture_image_view(&device, texture_image)?;
+        let texture_sampler = Self::create_texture_sampler(&device, &device_properties.limits)?;
+
         let (vertex_buffer, vertex_buffer_memory) = Self::create_vertex_buffer(
             &instance,
             &device,
@@ -263,6 +288,8 @@ impl VulkanApp {
             descriptor_set_layout,
             descriptor_pool,
             &uniform_buffers,
+            texture_image_view,
+            texture_sampler,
         )?;
 
         let command_buffers = Self::create_command_buffers(&device, command_pool)?;
@@ -294,6 +321,10 @@ impl VulkanApp {
             pipeline_layout,
             graphics_pipeline,
             command_pool,
+            texture_image,
+            texture_image_memory,
+            texture_image_view,
+            texture_sampler,
             vertex_buffer,
             vertex_buffer_memory,
             index_buffer,
@@ -487,7 +518,7 @@ impl VulkanApp {
         instance: &ash::Instance,
         surface_instance: &ash::khr::surface::Instance,
         surface: ash::vk::SurfaceKHR,
-    ) -> Result<ash::vk::PhysicalDevice> {
+    ) -> Result<(ash::vk::PhysicalDevice, ash::vk::PhysicalDeviceProperties)> {
         // Safety:
         // - instance is a valid VkInstance
         // - all devices given to `is_device_suitable` are from `enumerate_physical_devices`, so are valid `VkPhysicalDevice` handles
@@ -498,7 +529,12 @@ impl VulkanApp {
                 .find(|&x| Self::is_device_suitable(instance, surface_instance, x, surface))
         };
 
-        device.ok_or_else(|| err("No suitable device found").into())
+        device
+            .map(|d| {
+                let x = unsafe { instance.get_physical_device_properties(d) };
+                (d, x)
+            })
+            .ok_or_else(|| err("No suitable device found").into())
     }
     /// # SAFETY
     /// - `device` MUST be a valid `VkPhysicalDevice` handle
@@ -517,10 +553,6 @@ impl VulkanApp {
         let mut device_features2 =
             ash::vk::PhysicalDeviceFeatures2::default().push_next(&mut features12);
         unsafe { instance.get_physical_device_features2(device, &mut device_features2) };
-
-        if features12.vulkan_memory_model == ash::vk::FALSE {
-            return false;
-        }
 
         // No features needed for now, left here for future reference to use them though
         let _ = (device_properties, device_features);
@@ -559,7 +591,11 @@ impl VulkanApp {
             false
         };
 
-        indices.is_complete() && extensions_supported && swap_chain_adequate
+        indices.is_complete()
+            && extensions_supported
+            && swap_chain_adequate
+            && features12.vulkan_memory_model == ash::vk::TRUE // RustGPU shaders seem to need this
+            && device_features.sampler_anisotropy == ash::vk::TRUE // Anisotropy used in sampling shaders
     }
     /// # SAFETY
     /// - `device` MUST be a valid `VkPhysicalDevice` handle
@@ -644,7 +680,7 @@ impl VulkanApp {
             })
             .collect::<Vec<_>>();
 
-        let device_features = ash::vk::PhysicalDeviceFeatures::default();
+        let device_features = ash::vk::PhysicalDeviceFeatures::default().sampler_anisotropy(true);
 
         let extensions = DEVICE_EXTENSIONS
             .iter()
@@ -805,41 +841,38 @@ impl VulkanApp {
 
         Ok((swapchain, images, surface_format.format, extent))
     }
+    fn create_image_view(
+        device: &ash::Device,
+        image: ash::vk::Image,
+        format: ash::vk::Format,
+    ) -> Result<ash::vk::ImageView> {
+        let create_info = ash::vk::ImageViewCreateInfo::default()
+            .image(image)
+            .view_type(ash::vk::ImageViewType::TYPE_2D)
+            .format(format)
+            .subresource_range(
+                ash::vk::ImageSubresourceRange::default()
+                    .aspect_mask(ash::vk::ImageAspectFlags::COLOR)
+                    .base_mip_level(0)
+                    .level_count(1)
+                    .base_array_layer(0)
+                    .layer_count(1),
+            );
+
+        let image_view = unsafe { device.create_image_view(&create_info, None) }?;
+        Ok(image_view)
+    }
     fn create_image_views(
         device: &ash::Device,
         swap_chain_images: &[ash::vk::Image],
         swap_chain_image_format: ash::vk::Format,
     ) -> Result<Vec<ash::vk::ImageView>> {
-        let mut swap_chain_image_views =
-            vec![ash::vk::ImageView::default(); swap_chain_images.len()];
+        let image_views: Vec<ash::vk::ImageView> = swap_chain_images
+            .iter()
+            .flat_map(|image| Self::create_image_view(device, *image, swap_chain_image_format))
+            .collect();
 
-        for i in 0..swap_chain_images.len() {
-            let create_info = ash::vk::ImageViewCreateInfo::default()
-                .image(swap_chain_images[i])
-                .view_type(ash::vk::ImageViewType::TYPE_2D)
-                .format(swap_chain_image_format)
-                .components(
-                    ash::vk::ComponentMapping::default()
-                        .r(ash::vk::ComponentSwizzle::IDENTITY)
-                        .g(ash::vk::ComponentSwizzle::IDENTITY)
-                        .b(ash::vk::ComponentSwizzle::IDENTITY)
-                        .a(ash::vk::ComponentSwizzle::IDENTITY),
-                )
-                .subresource_range(
-                    ash::vk::ImageSubresourceRange::default()
-                        .aspect_mask(ash::vk::ImageAspectFlags::COLOR)
-                        .base_mip_level(0)
-                        .level_count(1)
-                        .base_array_layer(0)
-                        .layer_count(1),
-                );
-
-            let image_view = unsafe { device.create_image_view(&create_info, None) }
-                .map_err(|e| err(&format!("Failed to create image views: {e}")))?;
-            swap_chain_image_views[i] = image_view;
-        }
-
-        Ok(swap_chain_image_views)
+        Ok(image_views)
     }
     fn create_render_pass(
         device: &ash::Device,
@@ -890,8 +923,15 @@ impl VulkanApp {
             .descriptor_count(1)
             .stage_flags(ash::vk::ShaderStageFlags::VERTEX);
 
-        let layout_info = ash::vk::DescriptorSetLayoutCreateInfo::default()
-            .bindings(slice::from_ref(&ubo_layout_binding));
+        let sampler_layout_binding = ash::vk::DescriptorSetLayoutBinding::default()
+            .binding(1)
+            .descriptor_count(1)
+            .descriptor_type(ash::vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+            .stage_flags(ash::vk::ShaderStageFlags::FRAGMENT);
+
+        let bindings = [ubo_layout_binding, sampler_layout_binding];
+
+        let layout_info = ash::vk::DescriptorSetLayoutCreateInfo::default().bindings(&bindings);
         let layout = unsafe { device.create_descriptor_set_layout(&layout_info, None) }?;
         Ok(layout)
     }
@@ -1073,14 +1113,10 @@ impl VulkanApp {
 
         Ok((buffer, buffer_memory))
     }
-    fn copy_buffer(
+    fn begin_single_time_commands(
         device: &ash::Device,
         command_pool: ash::vk::CommandPool,
-        graphics_queue: ash::vk::Queue,
-        src: ash::vk::Buffer,
-        dst: ash::vk::Buffer,
-        size: ash::vk::DeviceSize,
-    ) -> Result<()> {
+    ) -> Result<ash::vk::CommandBuffer> {
         let alloc_info = ash::vk::CommandBufferAllocateInfo::default()
             .level(ash::vk::CommandBufferLevel::PRIMARY)
             .command_pool(command_pool)
@@ -1096,14 +1132,17 @@ impl VulkanApp {
 
         unsafe {
             device.begin_command_buffer(command_buffer, &begin_info)?;
+        }
 
-            let copy_region = ash::vk::BufferCopy::default()
-                .src_offset(0)
-                .dst_offset(0)
-                .size(size);
-
-            device.cmd_copy_buffer(command_buffer, src, dst, slice::from_ref(&copy_region));
-
+        Ok(command_buffer)
+    }
+    fn end_single_time_commands(
+        device: &ash::Device,
+        command_pool: ash::vk::CommandPool,
+        graphics_queue: ash::vk::Queue,
+        command_buffer: ash::vk::CommandBuffer,
+    ) -> Result<()> {
+        unsafe {
             device.end_command_buffer(command_buffer)?;
 
             let submit_info =
@@ -1119,7 +1158,138 @@ impl VulkanApp {
 
         Ok(())
     }
+    fn copy_buffer(
+        device: &ash::Device,
+        command_pool: ash::vk::CommandPool,
+        graphics_queue: ash::vk::Queue,
+        src: ash::vk::Buffer,
+        dst: ash::vk::Buffer,
+        size: ash::vk::DeviceSize,
+    ) -> Result<()> {
+        let command_buffer = Self::begin_single_time_commands(device, command_pool)?;
 
+        let copy_region = ash::vk::BufferCopy::default()
+            .src_offset(0)
+            .dst_offset(0)
+            .size(size);
+        unsafe {
+            device.cmd_copy_buffer(command_buffer, src, dst, slice::from_ref(&copy_region));
+        }
+
+        Self::end_single_time_commands(device, command_pool, graphics_queue, command_buffer)?;
+
+        Ok(())
+    }
+    fn transition_image_layout(
+        device: &ash::Device,
+        command_pool: ash::vk::CommandPool,
+        graphics_queue: ash::vk::Queue,
+        image: ash::vk::Image,
+        format: ash::vk::Format,
+        old_layout: ash::vk::ImageLayout,
+        new_layout: ash::vk::ImageLayout,
+    ) -> Result<()> {
+        let command_buffer = Self::begin_single_time_commands(device, command_pool)?;
+
+        let barrier = ash::vk::ImageMemoryBarrier::default()
+            .old_layout(old_layout)
+            .new_layout(new_layout)
+            .src_queue_family_index(ash::vk::QUEUE_FAMILY_IGNORED)
+            .dst_queue_family_index(ash::vk::QUEUE_FAMILY_IGNORED)
+            .image(image)
+            .subresource_range(
+                ash::vk::ImageSubresourceRange::default()
+                    .aspect_mask(ash::vk::ImageAspectFlags::COLOR)
+                    .base_mip_level(0)
+                    .level_count(1)
+                    .base_array_layer(0)
+                    .layer_count(1),
+            )
+            .src_access_mask(ash::vk::AccessFlags::empty()) // TODO
+            .dst_access_mask(ash::vk::AccessFlags::empty()) // TODO 
+            ;
+
+        let (barrier, source_stage, destination_stage) = if old_layout
+            == ash::vk::ImageLayout::UNDEFINED
+            && new_layout == ash::vk::ImageLayout::TRANSFER_DST_OPTIMAL
+        {
+            (
+                barrier
+                    .src_access_mask(ash::vk::AccessFlags::empty())
+                    .dst_access_mask(ash::vk::AccessFlags::TRANSFER_WRITE),
+                ash::vk::PipelineStageFlags::TOP_OF_PIPE,
+                ash::vk::PipelineStageFlags::TRANSFER,
+            )
+        } else if old_layout == ash::vk::ImageLayout::TRANSFER_DST_OPTIMAL
+            && new_layout == ash::vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL
+        {
+            (
+                barrier,
+                ash::vk::PipelineStageFlags::TRANSFER,
+                ash::vk::PipelineStageFlags::FRAGMENT_SHADER,
+            )
+        } else {
+            return error("Unsupported layout transition");
+        };
+
+        unsafe {
+            device.cmd_pipeline_barrier(
+                command_buffer,
+                source_stage,
+                destination_stage,
+                ash::vk::DependencyFlags::default(),
+                &[],
+                &[],
+                slice::from_ref(&barrier),
+            )
+        };
+
+        Self::end_single_time_commands(device, command_pool, graphics_queue, command_buffer)?;
+        Ok(())
+    }
+    fn copy_buffer_to_image(
+        device: &ash::Device,
+        command_pool: ash::vk::CommandPool,
+        graphics_queue: ash::vk::Queue,
+        buffer: ash::vk::Buffer,
+        image: ash::vk::Image,
+        width: u32,
+        height: u32,
+    ) -> Result<()> {
+        let command_buffer = Self::begin_single_time_commands(device, command_pool)?;
+
+        let region = ash::vk::BufferImageCopy::default()
+            .buffer_offset(0)
+            .buffer_row_length(0)
+            .buffer_image_height(0)
+            .image_subresource(
+                ash::vk::ImageSubresourceLayers::default()
+                    .aspect_mask(ash::vk::ImageAspectFlags::COLOR)
+                    .mip_level(0)
+                    .base_array_layer(0)
+                    .layer_count(1),
+            )
+            .image_offset(ash::vk::Offset3D { x: 0, y: 0, z: 0 })
+            .image_extent(ash::vk::Extent3D {
+                width,
+                height,
+                depth: 1,
+            });
+
+        unsafe {
+            device.cmd_copy_buffer_to_image(
+                command_buffer,
+                buffer,
+                image,
+                ash::vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                slice::from_ref(&region),
+            )
+        };
+
+        Self::end_single_time_commands(device, command_pool, graphics_queue, command_buffer)?;
+
+        Ok(())
+    }
     fn create_vertex_buffer(
         instance: &ash::Instance,
         device: &ash::Device,
@@ -1277,10 +1447,16 @@ impl VulkanApp {
         ))
     }
     fn create_descriptor_pool(device: &ash::Device) -> Result<ash::vk::DescriptorPool> {
-        let pool_size =
-            ash::vk::DescriptorPoolSize::default().descriptor_count(MAX_FRAMES_IN_FLIGHT);
+        let pool_sizes = [
+            ash::vk::DescriptorPoolSize::default()
+                .ty(ash::vk::DescriptorType::UNIFORM_BUFFER)
+                .descriptor_count(MAX_FRAMES_IN_FLIGHT),
+            ash::vk::DescriptorPoolSize::default()
+                .ty(ash::vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .descriptor_count(MAX_FRAMES_IN_FLIGHT),
+        ];
         let pool_info = ash::vk::DescriptorPoolCreateInfo::default()
-            .pool_sizes(slice::from_ref(&pool_size))
+            .pool_sizes(&pool_sizes)
             .max_sets(MAX_FRAMES_IN_FLIGHT);
 
         let descriptor_pool = unsafe { device.create_descriptor_pool(&pool_info, None) }?;
@@ -1292,6 +1468,8 @@ impl VulkanApp {
         descriptor_set_layout: ash::vk::DescriptorSetLayout,
         descriptor_pool: ash::vk::DescriptorPool,
         uniform_buffers: &[ash::vk::Buffer],
+        texture_image_view: ash::vk::ImageView,
+        texture_sampler: ash::vk::Sampler,
     ) -> Result<Vec<ash::vk::DescriptorSet>> {
         let layouts = [descriptor_set_layout; MAX_FRAMES_IN_FLIGHT as usize];
         let alloc_info = ash::vk::DescriptorSetAllocateInfo::default()
@@ -1305,13 +1483,28 @@ impl VulkanApp {
                 .buffer(buffer)
                 .offset(0)
                 .range(size_of::<UniformBufferObject>() as _);
-            let descriptor_write = ash::vk::WriteDescriptorSet::default()
-                .dst_set(descriptor_set)
-                .dst_binding(0)
-                .dst_array_element(0)
-                .descriptor_type(ash::vk::DescriptorType::UNIFORM_BUFFER)
-                .buffer_info(slice::from_ref(&buffer_info));
-            unsafe { device.update_descriptor_sets(slice::from_ref(&descriptor_write), &[]) }
+
+            let image_info = ash::vk::DescriptorImageInfo::default()
+                .image_layout(ash::vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                .image_view(texture_image_view)
+                .sampler(texture_sampler);
+
+            let descriptor_writes = [
+                ash::vk::WriteDescriptorSet::default()
+                    .dst_set(descriptor_set)
+                    .dst_binding(0)
+                    .dst_array_element(0)
+                    .descriptor_type(ash::vk::DescriptorType::UNIFORM_BUFFER)
+                    .buffer_info(slice::from_ref(&buffer_info)),
+                ash::vk::WriteDescriptorSet::default()
+                    .dst_set(descriptor_set)
+                    .dst_binding(1)
+                    .dst_array_element(0)
+                    .descriptor_type(ash::vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                    .descriptor_count(1)
+                    .image_info(slice::from_ref(&image_info)),
+            ];
+            unsafe { device.update_descriptor_sets(&descriptor_writes, &[]) }
         }
 
         Ok(descriptor_sets)
@@ -1642,6 +1835,166 @@ impl VulkanApp {
 
         Err(err("Failed to find memory type").into())
     }
+    fn create_texture_image(
+        instance: &ash::Instance,
+        device: &ash::Device,
+        physical_device: ash::vk::PhysicalDevice,
+        command_pool: ash::vk::CommandPool,
+        graphics_queue: ash::vk::Queue,
+    ) -> Result<(ash::vk::Image, ash::vk::DeviceMemory)> {
+        let path = Path::new("res/texture.png");
+        let image = image::open(path)
+            .expect("Failed to load texture.png")
+            .to_rgba8();
+        let height = image.height();
+        let width = image.width();
+        let pixels: &[_] = &*image;
+
+        let (staging_buffer, staging_buffer_memory) = Self::create_buffer(
+            instance,
+            device,
+            pixels.len() as _,
+            physical_device,
+            ash::vk::BufferUsageFlags::TRANSFER_SRC,
+            ash::vk::MemoryPropertyFlags::HOST_VISIBLE
+                | ash::vk::MemoryPropertyFlags::HOST_COHERENT,
+        )?;
+
+        unsafe {
+            let data = device.map_memory(
+                staging_buffer_memory,
+                0,
+                pixels.len() as _,
+                ash::vk::MemoryMapFlags::empty(),
+            )?;
+            ptr::copy_nonoverlapping(pixels.as_ptr(), data as _, pixels.len());
+            device.unmap_memory(staging_buffer_memory);
+        };
+
+        let (image, memory) = Self::create_image(
+            instance,
+            device,
+            physical_device,
+            width,
+            height,
+            ash::vk::Format::R8G8B8A8_SRGB,
+            ash::vk::ImageTiling::OPTIMAL,
+            ash::vk::ImageUsageFlags::TRANSFER_DST | ash::vk::ImageUsageFlags::SAMPLED,
+            ash::vk::MemoryPropertyFlags::DEVICE_LOCAL,
+        )?;
+
+        Self::transition_image_layout(
+            device,
+            command_pool,
+            graphics_queue,
+            image,
+            ash::vk::Format::R8G8B8A8_SRGB,
+            ash::vk::ImageLayout::UNDEFINED,
+            ash::vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+        )?;
+
+        Self::copy_buffer_to_image(
+            device,
+            command_pool,
+            graphics_queue,
+            staging_buffer,
+            image,
+            width,
+            height,
+        )?;
+
+        Self::transition_image_layout(
+            device,
+            command_pool,
+            graphics_queue,
+            image,
+            ash::vk::Format::R8G8B8A8_SRGB,
+            ash::vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+            ash::vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+        )?;
+
+        unsafe {
+            device.destroy_buffer(staging_buffer, None);
+            device.free_memory(staging_buffer_memory, None);
+        }
+
+        Ok((image, memory))
+    }
+    fn create_texture_image_view(
+        device: &ash::Device,
+        texture_image: ash::vk::Image,
+    ) -> Result<ash::vk::ImageView> {
+        Self::create_image_view(device, texture_image, ash::vk::Format::R8G8B8A8_SRGB)
+    }
+    fn create_texture_sampler(
+        device: &ash::Device,
+        device_limits: &ash::vk::PhysicalDeviceLimits,
+    ) -> Result<ash::vk::Sampler> {
+        let sampler_info = ash::vk::SamplerCreateInfo::default()
+            .mag_filter(ash::vk::Filter::LINEAR)
+            .min_filter(ash::vk::Filter::LINEAR)
+            .address_mode_u(ash::vk::SamplerAddressMode::REPEAT)
+            .address_mode_v(ash::vk::SamplerAddressMode::REPEAT)
+            .address_mode_w(ash::vk::SamplerAddressMode::REPEAT)
+            .anisotropy_enable(true)
+            .max_anisotropy(device_limits.max_sampler_anisotropy)
+            .border_color(ash::vk::BorderColor::INT_OPAQUE_BLACK)
+            .unnormalized_coordinates(false)
+            .compare_enable(false)
+            .compare_op(ash::vk::CompareOp::ALWAYS)
+            .mipmap_mode(ash::vk::SamplerMipmapMode::LINEAR)
+            .mip_lod_bias(0.0)
+            .min_lod(0.0)
+            .max_lod(0.0);
+
+        let sampler = unsafe { device.create_sampler(&sampler_info, None)? };
+        Ok(sampler)
+    }
+    fn create_image(
+        instance: &ash::Instance,
+        device: &ash::Device,
+        physical_device: ash::vk::PhysicalDevice,
+        width: u32,
+        height: u32,
+        format: ash::vk::Format,
+        tiling: ash::vk::ImageTiling,
+        usage: ash::vk::ImageUsageFlags,
+        properties: ash::vk::MemoryPropertyFlags,
+    ) -> Result<(ash::vk::Image, ash::vk::DeviceMemory)> {
+        let image_info = ash::vk::ImageCreateInfo::default()
+            .image_type(ash::vk::ImageType::TYPE_2D)
+            .extent(ash::vk::Extent3D {
+                width,
+                height,
+                depth: 1,
+            })
+            .mip_levels(1)
+            .array_layers(1)
+            .format(format)
+            .tiling(tiling)
+            .initial_layout(ash::vk::ImageLayout::UNDEFINED)
+            .usage(usage)
+            .sharing_mode(ash::vk::SharingMode::EXCLUSIVE)
+            .samples(ash::vk::SampleCountFlags::TYPE_1)
+            .flags(ash::vk::ImageCreateFlags::empty());
+
+        let image = unsafe { device.create_image(&image_info, None)? };
+
+        let mem_requirements = unsafe { device.get_image_memory_requirements(image) };
+
+        let alloc_info = ash::vk::MemoryAllocateInfo::default()
+            .allocation_size(mem_requirements.size)
+            .memory_type_index(Self::find_memory_type(
+                instance,
+                physical_device,
+                mem_requirements.memory_type_bits,
+                properties,
+            )?);
+        let memory = unsafe { device.allocate_memory(&alloc_info, None)? };
+        unsafe { device.bind_image_memory(image, memory, 0)? };
+
+        Ok((image, memory))
+    }
 }
 #[derive(Debug)]
 struct QueueFamilyIndices {
@@ -1729,6 +2082,14 @@ impl VulkanData {
                 self.swapchain,
             )
         };
+
+        unsafe {
+            self.device.destroy_sampler(self.texture_sampler, None);
+            self.device
+                .destroy_image_view(self.texture_image_view, None);
+            self.device.destroy_image(self.texture_image, None);
+            self.device.free_memory(self.texture_image_memory, None);
+        }
 
         unsafe {
             for (buf, mem) in self

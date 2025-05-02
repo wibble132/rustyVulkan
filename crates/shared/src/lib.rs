@@ -9,6 +9,7 @@ use spirv_std::glam;
 pub struct VertexData {
     pub position: glam::Vec2,
     pub colour: glam::Vec3,
+    pub tex_coord: glam::Vec2,
 }
 
 #[repr(C)]
